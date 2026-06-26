@@ -1,18 +1,45 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Brain, Database, DollarSign, Download, FileText, Globe2, Loader2, Network, Play, Search, Timer, Upload, Zap } from "lucide-react";
+import { Brain, Database, DollarSign, Download, FileText, Globe2, Layers3, Link2, Loader2, Mic2, Network, Play, Search, SlidersHorizontal, Timer, Upload, Zap } from "lucide-react";
 import type { RecommendationReport, WorkloadProfile } from "@/lib/types";
 
-const samplePrompts = `Classify this customer support ticket as billing, account, bug, or feature request and return JSON.
+const samplePrompts = `Classify a support ticket.
+Return one JSON label.
 
-Summarize the following help-center conversation into a short answer with cited source snippets.
+Summarize a help-center conversation.
+Include cited source snippets.
 
-Given the user's plan and invoices, extract renewal date, current tier, and likely churn risk.
+Extract renewal date, current tier, and churn risk.
 
-The user uploaded a screenshot of an error. Identify the likely UI issue and next action.`;
+Read a screenshot error and recommend the next action.`;
 
 type EventRow = { type: string; text: string; timestamp: number };
+type ModelRow = {
+  id: string;
+  name: string;
+  provider: string;
+  context?: number;
+  inputModalities?: string[];
+  openWeights?: boolean;
+};
+type ContextNode = { id: string; label: string; kind: string; x: number; y: number };
+type ContextEdge = { from: string; to: string };
+type ContextGraph = { nodes: ContextNode[]; edges: ContextEdge[]; evidenceCount?: number };
+
+const defaultContextGraph: ContextGraph = {
+  nodes: [
+    { id: "site", label: "Product website", kind: "input", x: 14, y: 50 },
+    { id: "prometheux", label: "Prometheux context agent", kind: "agent", x: 36, y: 32 },
+    { id: "models", label: "models.dev catalog", kind: "source", x: 36, y: 68 },
+    { id: "recommendation", label: "Recommendation", kind: "output", x: 84, y: 50 },
+  ],
+  edges: [
+    { from: "site", to: "prometheux" },
+    { from: "prometheux", to: "recommendation" },
+    { from: "models", to: "recommendation" },
+  ],
+};
 
 function parsePrompts(raw: string) {
   const text = raw.trim();
@@ -63,14 +90,46 @@ function eventText(type: string, data: unknown) {
     const d = data as { provider?: string; url?: string };
     return `web action: ${d.provider ?? d.url}`;
   }
+  if (type === "model_catalog") {
+    const d = data as { source?: string; count?: number };
+    return `${d.source ?? "models.dev"}: ${d.count ?? 0} models ranked`;
+  }
+  if (type === "context_layer") {
+    const d = data as { evidenceCount?: number };
+    return `Prometheux context graph ready (${d.evidenceCount ?? 0} evidence packets)`;
+  }
   if (type === "recommendation") return "Recommendation ready";
   if (type === "complete") return "Pipeline complete";
   return type;
 }
 
+function ContextLayer({ graph }: { graph: ContextGraph }) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  return (
+    <div className="context-layer">
+      <svg className="context-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {graph.edges.map((edge) => {
+          const from = nodes.get(edge.from);
+          const to = nodes.get(edge.to);
+          if (!from || !to) return null;
+          return <line key={`${edge.from}-${edge.to}`} x1={from.x + 8} y1={from.y} x2={to.x} y2={to.y} />;
+        })}
+      </svg>
+      {graph.nodes.map((node) => (
+        <div className={`context-node context-${node.kind}`} style={{ left: `${node.x}%`, top: `${node.y}%` }} key={node.id}>
+          <span>{node.kind}</span>
+          <strong>{node.label}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [profile, setProfile] = useState<WorkloadProfile>({
     product: "Customer support chatbot",
+    productUrl: "",
+    goalPrompt: "Recommend the best model stack for:\n- customer support answers\n- screenshots and tool calls\n- optional voice escalation\n- streamed responses",
     users: "SaaS customers and internal support agents",
     requestsPerDay: 500,
     latencySeconds: 3,
@@ -79,10 +138,16 @@ export default function Home() {
     canSelfHost: true,
     privacy: "sensitive",
     longContext: true,
+    contextTokens: 200000,
     vision: true,
+    voice: false,
     toolCalling: true,
     structuredOutput: true,
     streaming: true,
+    fastModel: false,
+    realTime: false,
+    frontierFirst: true,
+    priority: "best",
     notes: "Prefer low cost for simple tickets, higher quality for escalations.",
   });
   const [promptsText, setPromptsText] = useState(samplePrompts);
@@ -90,6 +155,8 @@ export default function Home() {
   const [browserSummary, setBrowserSummary] = useState("Browser/API research pane");
   const [browserUrl, setBrowserUrl] = useState("");
   const [report, setReport] = useState<RecommendationReport | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelRow[]>([]);
+  const [contextGraph, setContextGraph] = useState<ContextGraph>(defaultContextGraph);
   const [running, setRunning] = useState(false);
   const [settingUpClickHouse, setSettingUpClickHouse] = useState(false);
   const prompts = useMemo(() => parsePrompts(promptsText), [promptsText]);
@@ -103,6 +170,8 @@ export default function Home() {
     setRunning(true);
     setReport(null);
     setEvents([]);
+    setModelCatalog([]);
+    setContextGraph(defaultContextGraph);
     setBrowserSummary("Waiting for research events");
     setBrowserUrl("");
     try {
@@ -129,6 +198,8 @@ export default function Home() {
             setBrowserSummary(msg.data.summary ?? msg.data.provider ?? "Research update");
             setBrowserUrl(msg.data.url ?? "");
           }
+          if (msg.type === "model_catalog") setModelCatalog(msg.data.models ?? []);
+          if (msg.type === "context_layer") setContextGraph(msg.data);
           if (msg.type === "recommendation") setReport(msg.data);
         }
       }
@@ -183,7 +254,7 @@ export default function Home() {
               <span><Timer size={15} />{profile.latencySeconds}s target</span>
               <span><DollarSign size={15} />{profile.budgetMonthlyUsd}/mo</span>
             </div>
-            <button className="run-button" onClick={run} disabled={running || prompts.length === 0 || !profile.product.trim()}>
+            <button className="run-button" onClick={run} disabled={running || (!prompts.length && !profile.goalPrompt.trim() && !profile.productUrl.trim())}>
               {running ? <Loader2 size={17} className="spin" /> : <Play size={17} />}
               Analyze workload
             </button>
@@ -193,33 +264,50 @@ export default function Home() {
 
       <div className="layout">
         <section className="panel">
-          <div className="panel-title"><span><Brain size={16} /> Workload Interview</span></div>
+          <div className="panel-title"><span><Brain size={16} /> Product Input</span></div>
           <div className="form">
-            <label>What are you building?<input value={profile.product} onChange={(e) => update("product", e.target.value)} /></label>
-            <label>Users<input value={profile.users} onChange={(e) => update("users", e.target.value)} /></label>
-            <div className="grid-2">
-              <label>Requests/day<input type="number" min={1} value={profile.requestsPerDay} onChange={(e) => update("requestsPerDay", Number(e.target.value))} /></label>
-              <label>Latency sec<input type="number" min={0.1} step={0.1} value={profile.latencySeconds} onChange={(e) => update("latencySeconds", Number(e.target.value))} /></label>
+            <div className="quick-start">
+              <label><span><Link2 size={14} /> Product website</span><input placeholder="https://your-product.com" value={profile.productUrl} onChange={(e) => update("productUrl", e.target.value)} /></label>
+              <label><span><FileText size={14} /> What should the model do?</span><textarea rows={5} cols={1} wrap="soft" value={profile.goalPrompt} onChange={(e) => update("goalPrompt", e.target.value)} /></label>
             </div>
-            <div className="grid-2">
-              <label>Budget USD/mo<input type="number" min={1} value={profile.budgetMonthlyUsd} onChange={(e) => update("budgetMonthlyUsd", Number(e.target.value))} /></label>
-              <label>Region<input value={profile.region} onChange={(e) => update("region", e.target.value)} /></label>
-            </div>
-            <label>Privacy<select value={profile.privacy} onChange={(e) => update("privacy", e.target.value as WorkloadProfile["privacy"])}><option value="standard">Standard</option><option value="sensitive">Sensitive</option><option value="regulated">Regulated</option></select></label>
-            <div className="checks">
-              {([
-                ["canSelfHost", "Self-host"],
-                ["longContext", "Long context"],
-                ["vision", "Vision"],
-                ["toolCalling", "Tools"],
-                ["structuredOutput", "JSON output"],
-                ["streaming", "Streaming"],
-              ] as const).map(([key, label]) => (
-                <label className="check" key={key}><input type="checkbox" checked={Boolean(profile[key])} onChange={(e) => update(key, e.target.checked)} />{label}</label>
-              ))}
-            </div>
-            <label>Notes<textarea rows={3} value={profile.notes} onChange={(e) => update("notes", e.target.value)} /></label>
-            <label>Representative prompts ({prompts.length})<textarea rows={9} value={promptsText} onChange={(e) => setPromptsText(e.target.value)} /></label>
+
+            <details className="advanced">
+              <summary><SlidersHorizontal size={16} /> Advanced filters</summary>
+              <div className="advanced-body">
+                <label>Product name<input value={profile.product} onChange={(e) => update("product", e.target.value)} /></label>
+                <label>Users<input value={profile.users} onChange={(e) => update("users", e.target.value)} /></label>
+                <label>Priority<select value={profile.priority} onChange={(e) => update("priority", e.target.value as WorkloadProfile["priority"])}><option value="best">Best quality</option><option value="balanced">Balanced</option><option value="fast">Fast</option><option value="cheap">Low cost</option></select></label>
+                <label>Context length: {profile.contextTokens.toLocaleString()} tokens<input type="range" min={1000} max={1000000} step={1000} value={profile.contextTokens} onChange={(e) => update("contextTokens", Number(e.target.value))} /></label>
+                <div className="grid-2">
+                  <label>Requests/day<input type="number" min={1} value={profile.requestsPerDay} onChange={(e) => update("requestsPerDay", Number(e.target.value))} /></label>
+                  <label>Latency sec<input type="number" min={0.1} step={0.1} value={profile.latencySeconds} onChange={(e) => update("latencySeconds", Number(e.target.value))} /></label>
+                </div>
+                <div className="grid-2">
+                  <label>Budget USD/mo<input type="number" min={1} value={profile.budgetMonthlyUsd} onChange={(e) => update("budgetMonthlyUsd", Number(e.target.value))} /></label>
+                  <label>Region<input value={profile.region} onChange={(e) => update("region", e.target.value)} /></label>
+                </div>
+                <label>Privacy<select value={profile.privacy} onChange={(e) => update("privacy", e.target.value as WorkloadProfile["privacy"])}><option value="standard">Standard</option><option value="sensitive">Sensitive</option><option value="regulated">Regulated</option></select></label>
+                <div className="checks">
+                  {([
+                    ["frontierFirst", "Frontier first"],
+                    ["fastModel", "Fast model"],
+                    ["realTime", "Real-time"],
+                    ["voice", "Voice"],
+                    ["vision", "Vision"],
+                    ["longContext", "Long context"],
+                    ["toolCalling", "Tools"],
+                    ["structuredOutput", "JSON output"],
+                    ["streaming", "Streaming"],
+                    ["canSelfHost", "Self-host"],
+                  ] as const).map(([key, label]) => (
+                    <label className="check" key={key}><input type="checkbox" checked={Boolean(profile[key])} onChange={(e) => update(key, e.target.checked)} />{label}</label>
+                  ))}
+                </div>
+                <label>Notes<textarea rows={3} cols={1} wrap="soft" value={profile.notes} onChange={(e) => update("notes", e.target.value)} /></label>
+              </div>
+            </details>
+
+            <label>Representative prompts ({prompts.length})<textarea rows={5} cols={1} wrap="soft" value={promptsText} onChange={(e) => setPromptsText(e.target.value)} /></label>
             <label className="secondary-button">
               <Upload size={16} />
               Upload JSON, MD, TXT
@@ -239,6 +327,10 @@ export default function Home() {
                 <div className="browser-glow" />
                 <p>{browserSummary}</p>
               </div>
+            </section>
+            <section className="panel">
+              <div className="panel-title"><span><Layers3 size={16} /> Prometheux Context Layer</span><small>{contextGraph.evidenceCount ? `${contextGraph.evidenceCount} evidence packets` : "waiting for run"}</small></div>
+              <ContextLayer graph={contextGraph} />
             </section>
             <section className="panel">
               <div className="panel-title">
@@ -261,6 +353,17 @@ export default function Home() {
               <div><Globe2 size={16} />Tavily</div>
               <div><FileText size={16} />ADK</div>
               <div><Network size={16} />API</div>
+            </div>
+            <div className="model-catalog">
+              <div className="model-catalog-title"><span><Mic2 size={14} /> Model universe</span><strong>{modelCatalog.length || "pending"}</strong></div>
+              <div className="model-list">
+                {modelCatalog.length === 0 ? <div className="model-row muted">models.dev catalog appears here after analysis.</div> : modelCatalog.map((model) => (
+                  <div className="model-row" key={model.id}>
+                    <strong>{model.name}</strong>
+                    <span>{model.provider} · {model.context ? `${model.context.toLocaleString()} ctx` : "ctx unknown"} · {(model.inputModalities ?? []).join("/")}{model.openWeights ? " · open weights" : ""}</span>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="events">
               {events.length === 0 ? <div className="event">Agent events appear here.</div> : events.map((event, index) => (

@@ -60,6 +60,7 @@ button:disabled {
   gap: 14px;
   position: relative;
   overflow: hidden;
+  overflow-x: hidden;
   isolation: isolate;
   background:
     linear-gradient(135deg, rgba(30, 64, 175, 0.08), transparent 34%),
@@ -239,6 +240,7 @@ textarea:focus-visible,
 }
 
 .panel {
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   animation: panel-enter 220ms ease-out both;
@@ -287,6 +289,7 @@ textarea:focus-visible,
 }
 
 .form {
+  min-width: 0;
   min-height: 0;
   padding: 14px;
   display: grid;
@@ -301,6 +304,7 @@ textarea:focus-visible,
 }
 
 label {
+  min-width: 0;
   display: grid;
   gap: 6px;
   color: #334155;
@@ -308,9 +312,46 @@ label {
   font-weight: 800;
 }
 
+label span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quick-start {
+  display: grid;
+  gap: 12px;
+}
+
+.advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.advanced summary {
+  min-height: 42px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.advanced-body {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+
 input,
 select,
 textarea {
+  min-width: 0;
   width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -321,6 +362,7 @@ textarea {
   font-size: 13px;
   font-weight: 600;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  overflow-wrap: break-word;
   transition: border-color 180ms ease-out, box-shadow 180ms ease-out, background 180ms ease-out;
 }
 
@@ -334,6 +376,9 @@ textarea:focus {
 
 textarea {
   resize: vertical;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .checks {
@@ -378,7 +423,7 @@ textarea {
 .workbench {
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(210px, 0.64fr) minmax(330px, 1.36fr);
+  grid-template-rows: minmax(190px, 0.48fr) minmax(220px, 0.52fr) minmax(300px, 1fr);
   gap: 14px;
 }
 
@@ -435,6 +480,65 @@ textarea {
   animation: sweep 1.35s ease-in-out infinite;
 }
 
+.context-layer {
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 80% 20%, rgba(245, 158, 11, 0.12), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(239, 246, 255, 0.82));
+}
+
+.context-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.context-lines line {
+  stroke: rgba(30, 64, 175, 0.34);
+  stroke-width: 0.6;
+}
+
+.context-node {
+  width: 126px;
+  min-height: 48px;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+  color: #111827;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.1);
+  font-size: 11px;
+}
+
+.context-node span {
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.context-node strong {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.22;
+  text-overflow: ellipsis;
+}
+
+.context-agent {
+  border-color: rgba(245, 158, 11, 0.52);
+}
+
+.context-output {
+  border-color: rgba(5, 150, 105, 0.45);
+}
+
 .report {
   min-height: 0;
   padding: 16px;
@@ -448,7 +552,7 @@ textarea {
 }
 
 .stage > .panel {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .trace-tabs {
@@ -471,6 +575,52 @@ textarea {
 
 .trace-tabs div:last-child {
   border-right: 0;
+}
+
+.model-catalog {
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.model-catalog-title {
+  min-height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-catalog-title span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-list {
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+}
+
+.model-row {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 12px;
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.model-row strong {
+  color: #111827;
+}
+
+.model-row span,
+.model-row.muted {
+  color: var(--muted);
 }
 
 .events {
@@ -567,14 +717,23 @@ textarea {
 }
 
 @media (max-width: 920px) {
+  body {
+    overflow-x: hidden;
+  }
+
   .shell {
     display: block;
-    padding: 12px;
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+    overflow-x: hidden;
   }
 
   .topbar,
   .panel {
-    margin-bottom: 12px;
+    width: auto;
+    max-width: none;
+    margin: 12px;
   }
 
   .topbar-inner {
@@ -611,6 +770,8 @@ textarea {
   .layout,
   .stage,
   .workbench {
+    width: 100%;
+    max-width: 100%;
     display: grid;
     grid-template-columns: 1fr;
     height: auto;
@@ -626,6 +787,10 @@ textarea {
 
   .report {
     min-height: 360px;
+  }
+
+  .context-layer {
+    min-height: 280px;
   }
 
   .events {

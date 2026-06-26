@@ -1,5 +1,7 @@
 export interface WorkloadProfile {
   product: string;
+  productUrl: string;
+  goalPrompt: string;
   users: string;
   requestsPerDay: number;
   latencySeconds: number;
@@ -8,10 +10,16 @@ export interface WorkloadProfile {
   canSelfHost: boolean;
   privacy: "standard" | "sensitive" | "regulated";
   longContext: boolean;
+  contextTokens: number;
   vision: boolean;
+  voice: boolean;
   toolCalling: boolean;
   structuredOutput: boolean;
   streaming: boolean;
+  fastModel: boolean;
+  realTime: boolean;
+  frontierFirst: boolean;
+  priority: "best" | "balanced" | "fast" | "cheap";
   notes: string;
 }
 

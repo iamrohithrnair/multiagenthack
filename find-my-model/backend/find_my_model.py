@@ -22,6 +22,8 @@ from google.genai import types
 
 
 PROVIDER_PAGES = [
+    {"provider": "models.dev", "url": "https://models.dev/"},
+    {"provider": "Hugging Face", "url": "https://huggingface.co/models"},
     {"provider": "OpenRouter", "url": "https://openrouter.ai/models"},
     {"provider": "Together", "url": "https://www.together.ai/pricing"},
     {"provider": "Fireworks", "url": "https://fireworks.ai/pricing"},
@@ -31,6 +33,14 @@ PROVIDER_PAGES = [
     {"provider": "Google AI", "url": "https://ai.google.dev/gemini-api/docs/pricing"},
     {"provider": "Anthropic", "url": "https://www.anthropic.com/pricing"},
     {"provider": "OpenAI", "url": "https://openai.com/api/pricing/"},
+]
+
+FRONTIER_MODEL_IDS = [
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-fable-5",
+    "openai/gpt-5.5-pro",
+    "openai/gpt-5.5",
+    "google/gemini-3.1-pro-preview",
 ]
 
 
@@ -92,6 +102,12 @@ def get_json(url: str, headers: dict[str, str] | None = None, timeout: int = 40)
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="ignore")
         raise RuntimeError(f"{url} returned {error.code}: {detail[:800]}") from error
+
+
+def get_public_json(url: str, timeout: int = 40) -> Any:
+    request = urllib.request.Request(url, headers={"User-Agent": "find-my-model/0.1"}, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode())
 
 
 def prometheux_token() -> str:
@@ -456,15 +472,143 @@ def profile_prompts(prompts: list[str]) -> list[dict[str, Any]]:
     return profiled
 
 
+def model_summary(model: dict[str, Any]) -> dict[str, Any]:
+    modalities = model.get("modalities") or {}
+    limit = model.get("limit") or {}
+    cost = model.get("cost") or {}
+    return {
+        "id": model.get("id"),
+        "name": model.get("name"),
+        "provider": str(model.get("id") or "").split("/", 1)[0],
+        "family": model.get("family"),
+        "context": limit.get("context"),
+        "output": limit.get("output"),
+        "inputModalities": modalities.get("input") or [],
+        "outputModalities": modalities.get("output") or [],
+        "openWeights": bool(model.get("open_weights")),
+        "toolCall": bool(model.get("tool_call")),
+        "structuredOutput": bool(model.get("structured_output")),
+        "reasoning": bool(model.get("reasoning")),
+        "releaseDate": model.get("release_date"),
+        "inputCost": cost.get("input"),
+        "outputCost": cost.get("output"),
+    }
+
+
+def models_dev_catalog(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    data = get_public_json("https://models.dev/models.json", timeout=30)
+    models = [model_summary(model) for model in data.values()]
+    ranked = sorted(models, key=lambda model: model_score(model, profile), reverse=True)
+    emit("model_catalog", {"source": "models.dev", "count": len(models), "models": ranked})
+    finding = {
+        "adapter": "models.dev",
+        "provider": "models.dev",
+        "title": f"models.dev model catalog ({len(models)} models)",
+        "url": "https://models.dev/",
+        "summary": "Full model catalog loaded and ranked against workload filters. Frontier closed models are evaluated before lower-cost and open-weight alternatives.",
+        "evidence": json.dumps({"frontierFirst": FRONTIER_MODEL_IDS, "topRanked": ranked[:30]}, ensure_ascii=False),
+        "retrievedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    emit("research_finding", finding)
+    return ranked, [finding]
+
+
+def model_score(model: dict[str, Any], profile: dict[str, Any]) -> tuple[Any, ...]:
+    model_id = str(model.get("id") or "")
+    name = f"{model_id} {model.get('name') or ''}".lower()
+    inputs = set(model.get("inputModalities") or [])
+    context = int(model.get("context") or 0)
+    input_cost = model.get("inputCost")
+    output_cost = model.get("outputCost")
+    cost = float(input_cost or 99) + float(output_cost or 99)
+    wants_context = int(profile.get("contextTokens") or (1000000 if profile.get("longContext") else 32000))
+    fast_words = ("fast", "flash", "instant", "mini", "nano", "haiku", "turbo", "realtime")
+    quality_words = ("opus", "fable", "gpt-5.5", "gemini-3.1-pro", "pro")
+    return (
+        1 if context >= wants_context else 0,
+        1 if profile.get("voice") and "audio" in inputs else 0,
+        1 if profile.get("vision") and "image" in inputs else 0,
+        1 if profile.get("toolCalling") and model.get("toolCall") else 0,
+        1 if profile.get("structuredOutput") and model.get("structuredOutput") else 0,
+        1 if model_id in FRONTIER_MODEL_IDS and profile.get("frontierFirst", True) else 0,
+        1 if profile.get("realTime") and any(word in name for word in fast_words) else 0,
+        1 if (profile.get("fastModel") or profile.get("priority") == "fast") and any(word in name for word in fast_words) else 0,
+        1 if profile.get("priority") == "best" and any(word in name for word in quality_words) else 0,
+        -cost if profile.get("priority") == "cheap" else 0,
+        context,
+        str(model.get("releaseDate") or ""),
+    )
+
+
+def huggingface_search(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    product = profile.get("product") or profile.get("goalPrompt") or "llm"
+    terms = [str(product), "text-generation"]
+    if profile.get("voice"):
+        terms.append("audio")
+    if profile.get("vision"):
+        terms.append("vision")
+    query = urllib.parse.quote(" ".join(terms))
+    try:
+        data = get_public_json(f"https://huggingface.co/api/models?search={query}&sort=downloads&direction=-1&limit=10", timeout=20)
+    except Exception as exc:
+        emit("adapter_status", {"adapter": "huggingface", "status": f"search_failed: {exc}"})
+        return []
+    findings = []
+    for model in data[:10]:
+        finding = {
+            "adapter": "huggingface",
+            "provider": "Hugging Face",
+            "title": model.get("modelId") or "Hugging Face model",
+            "url": f"https://huggingface.co/{model.get('modelId')}",
+            "summary": clip(", ".join(model.get("tags") or []) or "Hugging Face model candidate", 500),
+            "evidence": json.dumps(model, ensure_ascii=False)[:1800],
+            "retrievedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        findings.append(finding)
+        emit("research_finding", finding)
+    return findings
+
+
+def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]]) -> dict[str, Any]:
+    nodes = [
+        {"id": "site", "label": profile.get("productUrl") or profile.get("product") or "Product", "kind": "input", "x": 14, "y": 34},
+        {"id": "prompt", "label": profile.get("goalPrompt") or f"{len(prompts)} representative prompts", "kind": "input", "x": 14, "y": 66},
+        {"id": "prometheux", "label": "Prometheux context agent", "kind": "agent", "x": 38, "y": 18},
+        {"id": "tavily", "label": "Tavily + web evidence", "kind": "source", "x": 38, "y": 50},
+        {"id": "models", "label": f"models.dev catalog: {len(ranked_models)} models", "kind": "source", "x": 38, "y": 82},
+        {"id": "frontier", "label": "Frontier-first shortlist", "kind": "rank", "x": 63, "y": 34},
+        {"id": "filters", "label": f"{int(profile.get('contextTokens') or 0):,} ctx | voice {bool(profile.get('voice'))} | realtime {bool(profile.get('realTime'))}", "kind": "rank", "x": 63, "y": 66},
+        {"id": "recommendation", "label": "Gemini ADK recommendation", "kind": "output", "x": 86, "y": 50},
+    ]
+    edges = [
+        {"from": "site", "to": "prometheux"},
+        {"from": "prompt", "to": "prometheux"},
+        {"from": "prometheux", "to": "frontier"},
+        {"from": "tavily", "to": "frontier"},
+        {"from": "models", "to": "frontier"},
+        {"from": "models", "to": "filters"},
+        {"from": "filters", "to": "recommendation"},
+        {"from": "frontier", "to": "recommendation"},
+    ]
+    graph = {"nodes": nodes, "edges": edges, "evidenceCount": len(findings)}
+    emit("context_layer", graph)
+    return graph
+
+
 def tavily_search(profile: dict[str, Any]) -> list[dict[str, Any]]:
     key = env("TAVILY_API_KEY")
     if not key:
         emit("adapter_status", {"adapter": "tavily", "status": "missing_key"})
         return []
+    website = profile.get("productUrl") or ""
+    goal = profile.get("goalPrompt") or profile.get("notes") or ""
     queries = [
-        "latest AI model API pricing context windows latency benchmarks OpenAI Anthropic Gemini Groq Together Fireworks DeepInfra",
-        f"{profile.get('product', 'AI workload')} LLM workload benchmark cost latency routing architecture",
+        "models.dev latest AI model API catalog pricing context windows OpenAI Anthropic Gemini voice realtime",
+        "Claude Opus 4.8 Claude Fable 5 GPT-5.5 Gemini 3.1 Pro model pricing context voice vision",
+        f"{profile.get('product', 'AI workload')} {website} {goal} LLM workload benchmark cost latency routing architecture",
     ]
+    if website:
+        queries.append(f"{website} product features AI assistant voice vision workflow users")
     findings: list[dict[str, Any]] = []
     for query in queries:
         emit("log", f"Tavily search: {query}")
@@ -487,15 +631,24 @@ def tavily_search(profile: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
-def prometheux_research() -> list[dict[str, Any]]:
+def prometheux_research(profile: dict[str, Any], ranked_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     project_id = prometheux_project_id(create=True)
     emit("adapter_status", {"adapter": "prometheux", "status": "calling_agent", "projectId": project_id})
+    website = profile.get("productUrl") or ""
+    goal = profile.get("goalPrompt") or ""
     message = (
         "Act as the Find My Model autonomous research agent. Inspect current AI provider "
-        "pricing, model availability, context windows, rate limits, hardware options, "
-        "regional availability, and supported features for these pages. Return compact "
-        "evidence with source URLs and do not rely on static prior knowledge.\n\n"
-        f"{json.dumps(PROVIDER_PAGES, ensure_ascii=False)}"
+        "pricing, model availability, context windows, voice/audio support, rate limits, "
+        "hardware options, regional availability, and supported features. If a product "
+        "website is supplied, inspect it first and infer the workload from the site and "
+        "use-case prompt. Evaluate frontier closed models first, then compare cheaper, "
+        "faster, and open-weight options. Return compact evidence with source URLs and "
+        "do not rely on static prior knowledge.\n\n"
+        f"Product website: {website or 'not provided'}\n"
+        f"Use-case prompt: {goal or 'not provided'}\n"
+        f"Advanced filters: {json.dumps(profile, ensure_ascii=False)}\n"
+        f"Provider pages: {json.dumps(PROVIDER_PAGES, ensure_ascii=False)}\n"
+        f"Ranked models.dev candidates: {json.dumps(ranked_models[:12], ensure_ascii=False)}"
     )
     request = urllib.request.Request(
         f"{prometheux_base_url()}/agent/{urllib.parse.quote(project_id)}/chat",
@@ -506,7 +659,7 @@ def prometheux_research() -> list[dict[str, Any]]:
     chunks: list[str] = []
     tool_events: list[dict[str, Any]] = []
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=150) as response:
             for raw_line in response:
                 line = raw_line.decode(errors="ignore").strip()
                 if not line:
@@ -543,7 +696,7 @@ def prometheux_research() -> list[dict[str, Any]]:
     return [finding]
 
 
-async def adk_recommend(request: dict[str, Any], prompts: list[dict[str, Any]], findings: list[dict[str, Any]]) -> dict[str, Any]:
+async def adk_recommend(request: dict[str, Any], prompts: list[dict[str, Any]], findings: list[dict[str, Any]], ranked_models: list[dict[str, Any]]) -> dict[str, Any]:
     key = env("GEMINI_API_KEY", "GOOLE_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY")
     if not key:
         raise RuntimeError("Gemini key missing: set GOOLE_API_KEY or GOOGLE_API_KEY")
@@ -556,6 +709,13 @@ async def adk_recommend(request: dict[str, Any], prompts: list[dict[str, Any]], 
     prompt = f"""
 You are an AI infrastructure architect. Recommend a real deployment strategy for this workload.
 Use only the evidence packets below. If pricing evidence is weak, say so and lower confidence.
+Start with the best frontier models from models.dev, especially Claude Opus 4.8, Claude Fable 5,
+GPT-5.5 / GPT-5.5 Pro, and Gemini 3.1 Pro when they match the filters. Do not restrict yourself
+to open-source or open-weight models; include open-weight/Hugging Face options only when they are
+a better fit for cost, privacy, deployment, or latency.
+Voice and vision are hard requirements when true; voice requires audio input support and vision
+requires image input support. If frontierFirst is true, pick the highest-ranked candidate that
+satisfies the hard filters unless the evidence says it is unavailable.
 Return only valid JSON with keys: primary, alternatives, routing, architecture, risks, markdown.
 
 Workload:
@@ -566,6 +726,9 @@ Prompt profile:
 
 Evidence:
 {json.dumps(evidence, indent=2)}
+
+Ranked models.dev candidates:
+{json.dumps(ranked_models[:60], indent=2)}
 """
     agent = Agent(
         name="recommendation_agent",
@@ -594,6 +757,47 @@ Evidence:
     return json.loads(match.group(0))
 
 
+def model_matches_hard_filters(model: dict[str, Any], profile: dict[str, Any]) -> bool:
+    inputs = set(model.get("inputModalities") or [])
+    context = int(model.get("context") or 0)
+    required_context = int(profile.get("contextTokens") or 0)
+    return (
+        (not required_context or context >= required_context)
+        and (not profile.get("voice") or "audio" in inputs)
+        and (not profile.get("vision") or "image" in inputs)
+    )
+
+
+def find_recommended_model(recommendation: dict[str, Any], ranked_models: list[dict[str, Any]]) -> dict[str, Any] | None:
+    primary = recommendation.get("primary") or {}
+    name = f"{primary.get('provider') or ''} {primary.get('model') or ''}".lower()
+    return next((model for model in ranked_models if str(model.get("id") or "").lower() in name or str(model.get("name") or "").lower() in name), None)
+
+
+def enforce_hard_filters(recommendation: dict[str, Any], profile: dict[str, Any], ranked_models: list[dict[str, Any]]) -> dict[str, Any]:
+    current = find_recommended_model(recommendation, ranked_models)
+    if current and model_matches_hard_filters(current, profile):
+        return recommendation
+    replacement = next((model for model in ranked_models if model_matches_hard_filters(model, profile)), None)
+    if not replacement:
+        return recommendation
+    previous = recommendation.get("primary") or {}
+    recommendation["alternatives"] = [{"label": "AI recommendation before hard-filter enforcement", **previous}, *(recommendation.get("alternatives") or [])]
+    recommendation["primary"] = {
+        "provider": replacement.get("provider"),
+        "model": replacement.get("name"),
+        "hardware": "Provider-managed API",
+        "routing": "Primary route because it satisfies the selected hard filters before lower-ranked alternatives.",
+        "latency": "Use the ranked provider endpoint directly; add a faster secondary route if production latency misses target.",
+        "cost": "Pricing not present in models.dev for this entry; verify provider pricing before launch.",
+        "quality": f"Ranked first for requested filters: context {replacement.get('context'):,}, modalities {', '.join(replacement.get('inputModalities') or [])}.",
+        "confidence": "High on feature fit from models.dev; pricing confidence depends on provider evidence.",
+    }
+    note = f"Primary adjusted to {replacement.get('name')} because the selected hard filters require native support for the requested modalities/context.\n\n"
+    recommendation["markdown"] = note + str(recommendation.get("markdown") or "")
+    return recommendation
+
+
 async def run(request: dict[str, Any]) -> None:
     run_id = str(uuid.uuid4())
     clickhouse = ClickHouseAdapter(run_id)
@@ -609,9 +813,15 @@ async def run(request: dict[str, Any]) -> None:
     emit("run_started", {"runId": run_id, "python": sys.version.split()[0], "runtime": "python-3.14.5-adk"})
     emit("integration_status", integration_status())
     record("run_started", request)
-    prompts = profile_prompts(request.get("prompts") or [])
+    profile = request.get("profile") or {}
+    prompt_inputs = [str(item) for item in (request.get("prompts") or []) if str(item).strip()]
+    if profile.get("goalPrompt"):
+        prompt_inputs.insert(0, str(profile.get("goalPrompt")))
+    if not prompt_inputs and profile.get("productUrl"):
+        prompt_inputs.append(f"Infer the product workload from {profile.get('productUrl')} and recommend the best model stack.")
+    prompts = profile_prompts(prompt_inputs)
     if not prompts:
-        raise RuntimeError("Upload at least one representative prompt.")
+        raise RuntimeError("Add a product website, prompt, or representative prompt.")
     categories: dict[str, int] = {}
     for prompt in prompts:
         categories[prompt["category"]] = categories.get(prompt["category"], 0) + 1
@@ -620,11 +830,20 @@ async def run(request: dict[str, Any]) -> None:
     record("prompt_profile", profile_event)
 
     emit("phase", "research")
-    findings = [*tavily_search(request.get("profile") or {}), *prometheux_research()]
+    ranked_models, model_findings = models_dev_catalog(profile)
+    findings = [
+        *model_findings,
+        *huggingface_search(profile),
+        *tavily_search(profile),
+        *prometheux_research(profile, ranked_models),
+    ]
+    context_graph = context_layer(profile, prompts, ranked_models, findings)
     record("research", {"findings": findings})
+    record("context_layer", context_graph)
 
     emit("phase", "reasoning")
-    recommendation = await adk_recommend(request, prompts, findings)
+    recommendation = await adk_recommend(request, prompts, findings, ranked_models)
+    recommendation = enforce_hard_filters(recommendation, profile, ranked_models)
     emit("recommendation", recommendation)
     record("recommendation", recommendation)
     emit("complete", {"runId": run_id})
@@ -635,6 +854,12 @@ def selfcheck() -> None:
     assert profiled[0]["category"] == "classification"
     assert profiled[1]["category"] == "summarization"
     assert profiled[2]["category"] == "coding"
+    recommendation = {"primary": {"provider": "Anthropic", "model": "Claude Opus 4.8"}, "alternatives": [], "markdown": ""}
+    ranked = [
+        {"provider": "google", "name": "Gemini 3.1 Pro Preview", "id": "google/gemini-3.1-pro-preview", "context": 1048576, "inputModalities": ["text", "image", "audio"]},
+        {"provider": "anthropic", "name": "Claude Opus 4.8", "id": "anthropic/claude-opus-4-8", "context": 1000000, "inputModalities": ["text", "image"]},
+    ]
+    assert enforce_hard_filters(recommendation, {"voice": True, "vision": True, "contextTokens": 200000}, ranked)["primary"]["provider"] == "google"
     print("ok")
 
 
