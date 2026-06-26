@@ -162,10 +162,13 @@ def prometheux_project_id(create: bool = True) -> str:
 
 def prometheux_concept_names(project_id: str) -> set[str]:
     data = prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/list?scope=user", method="GET")
-    return {
-        str(concept.get("name") or concept.get("concept_name") or "")
-        for concept in data.get("data") or []
-    }
+    names: set[str] = set()
+    for concept in data.get("data") or []:
+        for key in ["name", "concept_name", "id", "predicate_name"]:
+            value = str(concept.get(key) or "")
+            if value:
+                names.add(value)
+    return names
 
 
 def prometheux_save_concept(project_id: str, name: str, definition: str, output_predicate: str, description: str, existing: set[str]) -> None:
@@ -181,6 +184,66 @@ def prometheux_save_concept(project_id: str, name: str, definition: str, output_
     if name in existing:
         body["existing_name"] = name
     prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/save", body)
+
+
+def prometheux_run_concept(project_id: str, name: str) -> dict[str, Any]:
+    return prometheux_json(
+        f"/concepts/{urllib.parse.quote(project_id)}/run/{urllib.parse.quote(name)}",
+        {"scope": "user", "persist_outputs": True, "force_rerun": True},
+    )
+
+
+def prometheux_execution_status(project_id: str) -> dict[str, Any]:
+    return prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/execution-status?scope=user", method="GET")
+
+
+def prometheux_fetch_output(project_id: str, output_predicate: str) -> dict[str, Any]:
+    predicate = urllib.parse.quote(output_predicate)
+    return prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/fetch?output_predicate={predicate}&page=1&page_size=5&project_scope=user", method="GET")
+
+
+def prometheux_status_value(data: dict[str, Any]) -> str:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return str(payload.get("status") or data.get("status") or "")
+
+
+def prometheux_wait_for_completion(project_id: str) -> dict[str, Any]:
+    status: dict[str, Any] = {}
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        status = prometheux_execution_status(project_id)
+        if prometheux_status_value(status) in {"idle", "success", "error", "cancelled", "interrupted"}:
+            return status
+        time.sleep(2)
+    return status
+
+
+def prometheux_rows(data: dict[str, Any]) -> list[Any]:
+    payload = data.get("data")
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        results = payload.get("results")
+        if isinstance(results, dict) and isinstance(results.get("facts"), list):
+            return results["facts"]
+        for key in ["rows", "results", "records", "data"]:
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return rows
+    return []
+
+
+def prometheux_total_rows(data: dict[str, Any]) -> int:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    pagination = payload.get("pagination")
+    if not isinstance(pagination, dict):
+        pagination = {}
+    return int(pagination.get("total_count") or len(prometheux_rows(data)))
+
+
+def prometheux_error_code(error: Exception) -> str:
+    match = re.search(r'"error_code"\s*:\s*"([^"]+)"', str(error))
+    return match.group(1) if match else ""
 
 
 _CLICKHOUSE_URL: str | None = None
@@ -647,23 +710,24 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
         for model in top_models
     )
     lines = [
+        '@output("find_my_model_ontology").',
         "% Find My Model ontology. Saved into Prometheux for the project lineage view.",
         vadalog_fact("find_my_model_workload", "workload", profile.get("product") or "", profile.get("goalPrompt") or ""),
     ]
     lines.extend(vadalog_fact("find_my_model_requirement", item["id"], item["label"], "hard" if item["hard"] else "soft") for item in requirements)
-    lines.extend(vadalog_fact("find_my_model_ontology", "requirement", item["id"], item["label"]) for item in requirements)
+    lines.extend(vadalog_fact("find_my_model_ontology_fact", "requirement", item["id"], item["label"]) for item in requirements)
     lines.extend(vadalog_fact("find_my_model_evidence", item["id"], item.get("source") or "", item.get("url") or "") for item in evidence[:12])
     if profile.get("rag"):
         lines.append(vadalog_fact("find_my_model_rag_source", vector_db, profile.get("vectorConnection") or "", ",".join(uploaded_files[:12])))
-        lines.append(vadalog_fact("find_my_model_ontology", "rag_agent", vector_db, profile.get("vectorConnection") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", "rag_agent", vector_db, profile.get("vectorConnection") or ""))
     for model in top_models:
         model_id = str(model.get("id") or "")
         lines.append(vadalog_fact("find_my_model_candidate", model_id, model.get("name") or "", model.get("provider") or "", model.get("context") or 0))
-        lines.append(vadalog_fact("find_my_model_ontology", "candidate_model", model_id, model.get("name") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", "candidate_model", model_id, model.get("name") or ""))
         for modality in model.get("inputModalities") or []:
             lines.append(vadalog_fact("find_my_model_supports", model_id, modality))
         lines.append(vadalog_fact("find_my_model_grounded_by", model_id, "E1"))
-    lines.append('@output("find_my_model_ontology").')
+    lines.append("find_my_model_ontology(Type, Entity, Label) <- find_my_model_ontology_fact(Type, Entity, Label).")
     return {
         "projectConcept": "find_my_model_ontology",
         "outputPredicate": "find_my_model_ontology",
@@ -686,15 +750,15 @@ def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> di
         {"id": "L5", "from": "rag_context", "to": "ontology", "label": "Bind retrieval sources, requirements, candidates, and evidence", "evidenceIds": ["U1", "E1", *web_ids[:4]]},
         {"id": "L6", "from": "ontology", "to": "recommendation", "label": "ADK may only reason from cited packets; missing facts stay unknown", "evidenceIds": ["E1", *web_ids[:4]]},
     ]
-    lines = ["% Find My Model lineage. Prometheux can materialize this as a chase graph when run."]
+    lines = [
+        '@output("find_my_model_lineage").',
+        "% Find My Model lineage. Prometheux materializes this output predicate when run.",
+    ]
     for step in steps:
-        lines.append(vadalog_fact("find_my_model_lineage", step["id"], step["from"], step["to"], step["label"]))
+        lines.append(vadalog_fact("find_my_model_lineage_fact", step["id"], step["from"], step["to"], step["label"]))
         for evidence_id in step["evidenceIds"]:
             lines.append(vadalog_fact("find_my_model_lineage_evidence", step["id"], evidence_id))
-    lines.extend([
-        '@chase("csv", "disk/find_my_model", "lineage.csv").',
-        '@output("find_my_model_lineage").',
-    ])
+    lines.append("find_my_model_lineage(Step, Source, Target, Label) <- find_my_model_lineage_fact(Step, Source, Target, Label).")
     return {
         "projectConcept": "find_my_model_lineage",
         "outputPredicate": "find_my_model_lineage",
@@ -704,11 +768,40 @@ def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> di
     }
 
 
-def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: dict[str, Any]) -> None:
+def prometheux_populate_concept(project_id: str, concept: dict[str, Any]) -> dict[str, Any]:
+    name = str(concept["projectConcept"])
+    output_predicate = str(concept["outputPredicate"])
+    result: dict[str, Any] = {"concept": name, "outputPredicate": output_predicate}
+    try:
+        run_result = prometheux_run_concept(project_id, name)
+        execution_status = prometheux_wait_for_completion(project_id)
+        fetch_result = prometheux_fetch_output(project_id, output_predicate)
+        rows = prometheux_rows(fetch_result)
+        total_rows = prometheux_total_rows(fetch_result)
+        result.update({
+            "status": "populated" if total_rows else "fetched_no_rows",
+            "runStatus": run_result.get("status"),
+            "executionStatus": prometheux_status_value(execution_status),
+            "sampleRows": len(rows),
+            "totalRows": total_rows,
+        })
+    except Exception as exc:
+        result.update({"status": "population_failed", "error": str(exc)[:800]})
+        error_code = prometheux_error_code(exc)
+        if error_code:
+            result["errorCode"] = error_code
+    emit("adapter_status", {"adapter": "prometheux", "projectId": project_id, **result})
+    return result
+
+
+def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: dict[str, Any]) -> dict[str, Any]:
     existing = prometheux_concept_names(project_id)
     prometheux_save_concept(project_id, ontology["projectConcept"], ontology["definition"], ontology["outputPredicate"], "Find My Model ontology: workload, requirements, candidates, and evidence bindings.", existing)
     prometheux_save_concept(project_id, lineage["projectConcept"], lineage["definition"], lineage["outputPredicate"], "Find My Model lineage: source evidence to ontology to recommendation.", existing)
-    emit("adapter_status", {"adapter": "prometheux", "status": "saved_ontology_and_lineage_concepts", "projectId": project_id})
+    concepts = [prometheux_populate_concept(project_id, ontology), prometheux_populate_concept(project_id, lineage)]
+    report = {"projectId": project_id, "concepts": concepts}
+    emit("adapter_status", {"adapter": "prometheux", "status": "saved_and_checked_ontology_lineage", **report})
+    return report
 
 
 def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]], ontology: dict[str, Any], lineage: dict[str, Any], evidence: list[dict[str, Any]], *, emit_event: bool = True) -> dict[str, Any]:
@@ -1039,9 +1132,11 @@ async def run(request: dict[str, Any]) -> None:
     ontology = build_ontology(profile, prompts, ranked_models, evidence)
     lineage = build_lineage(profile, evidence)
     project_id = prometheux_project_id(create=True)
-    prometheux_save_context(project_id, ontology, lineage)
+    prometheux_report = prometheux_save_context(project_id, ontology, lineage)
     ontology["projectId"] = project_id
+    ontology["prometheux"] = prometheux_report["concepts"][0]
     lineage["projectId"] = project_id
+    lineage["prometheux"] = prometheux_report["concepts"][1]
     emit("ontology", ontology)
     emit("lineage", lineage)
     context_graph = context_layer(profile, prompts, ranked_models, findings, ontology, lineage, evidence)
@@ -1085,10 +1180,16 @@ def selfcheck() -> None:
     ontology = build_ontology(rag_profile, profiled, ranked, evidence)
     lineage = build_lineage(rag_profile, evidence)
     assert "find_my_model_candidate" in ontology["definition"]
+    assert "find_my_model_ontology(Type, Entity, Label) <- find_my_model_ontology_fact(Type, Entity, Label)." in ontology["definition"]
     assert "find_my_model_rag_source" in ontology["definition"]
     assert any(item["id"] == "rag" and item["hard"] for item in ontology["requirements"])
-    assert '@chase("csv", "disk/find_my_model", "lineage.csv").' in lineage["definition"]
+    assert '@output("find_my_model_lineage").' in lineage["definition"]
+    assert "find_my_model_lineage(Step, Source, Target, Label) <- find_my_model_lineage_fact(Step, Source, Target, Label)." in lineage["definition"]
+    assert "@chase(" not in lineage["definition"]
     assert any(step["to"] == "rag_context" for step in lineage["steps"])
+    assert prometheux_error_code(RuntimeError('{"error_code":"NO_ACTIVE_COMPUTE"}')) == "NO_ACTIVE_COMPUTE"
+    assert len(prometheux_rows({"data": {"rows": [1, 2]}})) == 2
+    assert prometheux_total_rows({"data": {"results": {"facts": [1, 2]}, "pagination": {"total_count": 12}}}) == 12
     context = context_layer(rag_profile, profiled, ranked, [], ontology, lineage, evidence, emit_event=False)
     assert [step["label"] for step in context["pipeline"]] == ["Inputs", "Ingest", "RAG", "Research", "Evidence", "Ontology", "Lineage", "Recommend"]
     assert context["edges"] == [
