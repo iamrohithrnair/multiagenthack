@@ -57,11 +57,12 @@ Latest live verification:
 - lineage fetch total: `6` rows
 - the full demo backend stream reaches `context_layer`, `recommendation`, and `complete`
 
-![Prometheux ontology canvas](docs/prometheux-ontology-canvas.png)
+![Prometheux ontology canvas](find-my-model/docs/prometheux-ontology-canvas.png)
 
 ## Run Locally
 
 ```bash
+cd find-my-model
 npm install
 npm run dev -- -H 127.0.0.1 -p 3001
 ```
