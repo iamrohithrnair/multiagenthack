@@ -714,25 +714,43 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
         {"from": str(model.get("id")), "to": "candidate_model", "type": "ranked_by_models_dev", "evidenceIds": ["E1"]}
         for model in top_models
     )
+    workload = "workload"
     lines = [
         '@output("find_my_model_ontology").',
-        "% Find My Model ontology. Saved into Prometheux for the project lineage view.",
-        vadalog_fact("find_my_model_workload", "workload", profile.get("product") or "", profile.get("goalPrompt") or ""),
+        "% Find My Model ontology graph. Entity-relationship triples for the Prometheux ontology view.",
+        vadalog_fact("find_my_model_workload", workload, profile.get("product") or "", profile.get("goalPrompt") or ""),
     ]
     lines.extend(vadalog_fact("find_my_model_requirement", item["id"], item["label"], "hard" if item["hard"] else "soft") for item in requirements)
-    lines.extend(vadalog_fact("find_my_model_ontology_fact", "requirement", item["id"], item["label"]) for item in requirements)
-    lines.extend(vadalog_fact("find_my_model_evidence", item["id"], item.get("source") or "", item.get("url") or "") for item in evidence[:12])
+    for item in requirements:
+        requirement_id = f"requirement:{item['id']}"
+        lines.append(vadalog_fact("find_my_model_ontology_fact", workload, "requires", requirement_id))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", requirement_id, "label", item["label"]))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", requirement_id, "strength", "hard" if item["hard"] else "soft"))
+    for item in evidence[:12]:
+        evidence_id = f"evidence:{item['id']}"
+        lines.append(vadalog_fact("find_my_model_evidence", item["id"], item.get("source") or "", item.get("url") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", evidence_id, "source", item.get("source") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", evidence_id, "url", item.get("url") or ""))
     if profile.get("rag"):
         lines.append(vadalog_fact("find_my_model_rag_source", vector_db, profile.get("vectorConnection") or "", ",".join(uploaded_files[:12])))
-        lines.append(vadalog_fact("find_my_model_ontology_fact", "rag_agent", vector_db, profile.get("vectorConnection") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", workload, "uses_rag_store", vector_db))
+        if profile.get("vectorConnection"):
+            lines.append(vadalog_fact("find_my_model_ontology_fact", vector_db, "connection", profile.get("vectorConnection") or ""))
+        for file_name in uploaded_files[:12]:
+            lines.append(vadalog_fact("find_my_model_ontology_fact", vector_db, "indexes_file", file_name))
     for model in top_models:
         model_id = str(model.get("id") or "")
         lines.append(vadalog_fact("find_my_model_candidate", model_id, model.get("name") or "", model.get("provider") or "", model.get("context") or 0))
-        lines.append(vadalog_fact("find_my_model_ontology_fact", "candidate_model", model_id, model.get("name") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", workload, "considers_model", model_id))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", model_id, "name", model.get("name") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", model_id, "provider", model.get("provider") or ""))
+        lines.append(vadalog_fact("find_my_model_ontology_fact", model_id, "context_tokens", model.get("context") or 0))
         for modality in model.get("inputModalities") or []:
             lines.append(vadalog_fact("find_my_model_supports", model_id, modality))
+            lines.append(vadalog_fact("find_my_model_ontology_fact", model_id, "supports_input", modality))
         lines.append(vadalog_fact("find_my_model_grounded_by", model_id, "E1"))
-    lines.append("find_my_model_ontology(Type, Entity, Label) <- find_my_model_ontology_fact(Type, Entity, Label).")
+        lines.append(vadalog_fact("find_my_model_ontology_fact", model_id, "grounded_by", "evidence:E1"))
+    lines.append("find_my_model_ontology(Subject, Relation, Object) <- find_my_model_ontology_fact(Subject, Relation, Object).")
     return {
         "projectConcept": "find_my_model_ontology",
         "outputPredicate": "find_my_model_ontology",
@@ -801,7 +819,7 @@ def prometheux_populate_concept(project_id: str, concept: dict[str, Any]) -> dic
 
 def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: dict[str, Any]) -> dict[str, Any]:
     existing = prometheux_concept_names(project_id)
-    prometheux_save_concept(project_id, ontology["projectConcept"], ontology["definition"], ontology["outputPredicate"], "Find My Model ontology: workload, requirements, candidates, and evidence bindings.", existing)
+    prometheux_save_concept(project_id, ontology["projectConcept"], ontology["definition"], ontology["outputPredicate"], "Find My Model ontology graph: workload, requirements, RAG, candidates, and evidence relationships.", existing)
     prometheux_save_concept(project_id, lineage["projectConcept"], lineage["definition"], lineage["outputPredicate"], "Find My Model lineage: source evidence to ontology to recommendation.", existing)
     concepts = [prometheux_populate_concept(project_id, ontology), prometheux_populate_concept(project_id, lineage)]
     report = {"projectId": project_id, "concepts": concepts}
@@ -1268,7 +1286,9 @@ def selfcheck() -> None:
     ontology = build_ontology(rag_profile, profiled, ranked, evidence)
     lineage = build_lineage(rag_profile, evidence)
     assert "find_my_model_candidate" in ontology["definition"]
-    assert "find_my_model_ontology(Type, Entity, Label) <- find_my_model_ontology_fact(Type, Entity, Label)." in ontology["definition"]
+    assert "find_my_model_ontology(Subject, Relation, Object) <- find_my_model_ontology_fact(Subject, Relation, Object)." in ontology["definition"]
+    assert 'find_my_model_ontology_fact("workload", "requires", "requirement:context").' in ontology["definition"]
+    assert 'find_my_model_ontology_fact("workload", "considers_model", "openai/gpt-5.5").' in ontology["definition"]
     assert "self-hostable open weights" in ontology["definition"]
     assert "find_my_model_rag_source" in ontology["definition"]
     assert any(item["id"] == "rag" and item["hard"] for item in ontology["requirements"])

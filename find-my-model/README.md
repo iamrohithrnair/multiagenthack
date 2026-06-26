@@ -33,10 +33,12 @@ The core idea: the best model is not always the costliest frontier model. Pickin
 
 ## Prometheux Verification
 
-The Prometheux dashboard/console should show two separate populated concepts in project `find_my_model`:
+The Prometheux dashboard/console should show two separate concepts in project `find_my_model`:
 
 - `find_my_model_ontology`
 - `find_my_model_lineage`
+
+The ontology is saved as graph triples with fields `Subject`, `Relation`, and `Object`. The lineage is saved separately with fields `Step`, `Source`, `Target`, and `Label`.
 
 The backend follows the documented concept lifecycle:
 
@@ -44,10 +46,11 @@ The backend follows the documented concept lifecycle:
 save concept -> run concept -> poll execution status -> fetch output predicate rows
 ```
 
-The latest live verification populated both concepts:
+Latest live verification:
 
-- ontology fetch total: `11` rows
-- lineage fetch total: `6` rows
+- concept save/list works and shows the corrected ontology graph shape
+- the full demo backend stream reaches `context_layer`, `recommendation`, and `complete`
+- Prometheux run/fetch currently returns `Selected compute resource is not reachable`; once the selected Prometheux compute machine is running, the same app flow will populate/fetch rows
 
 ## Run Locally
 

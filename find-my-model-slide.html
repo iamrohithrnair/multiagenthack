@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Find My Model — What it is</title>
+
+<!-- Fonts: Clash Display + Satoshi (Neon Cyber preset) -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://api.fontshare.com" />
+<link href="https://api.fontshare.com/v2/css?f[]=clash-display@600,700&f[]=satoshi@400,500,700&display=swap" rel="stylesheet" />
+
+<style>
+/* ===========================================
+   VIEWPORT FITTING: MANDATORY BASE STYLES
+   =========================================== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; overflow-x: hidden; }
+html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+
+.slide {
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+.slide-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    max-height: 100%;
+    overflow: hidden;
+    padding: var(--slide-padding);
+}
+
+:root {
+    --title-size: clamp(2.4rem, 8vw, 6.5rem);
+    --h2-size: clamp(1.1rem, 3vw, 1.9rem);
+    --h3-size: clamp(0.95rem, 2vw, 1.35rem);
+    --body-size: clamp(0.8rem, 1.4vw, 1.05rem);
+    --small-size: clamp(0.62rem, 1vw, 0.8rem);
+
+    --slide-padding: clamp(1.25rem, 4.5vw, 5rem);
+    --content-gap: clamp(0.9rem, 2.2vh, 2rem);
+    --element-gap: clamp(0.25rem, 1vw, 1rem);
+
+    /* Neon Cyber palette */
+    --bg: #060912;
+    --bg-2: #0a1226;
+    --ink: #eaf2ff;
+    --ink-dim: #93a4c8;
+    --cyan: #36e6ff;
+    --magenta: #ff44d4;
+    --line: rgba(120, 160, 230, 0.16);
+}
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Satoshi", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Atmosphere ---------- */
+.slide::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(60vw 60vw at 82% 18%, rgba(54, 230, 255, 0.14), transparent 60%),
+        radial-gradient(55vw 55vw at 12% 92%, rgba(255, 68, 212, 0.12), transparent 60%),
+        linear-gradient(180deg, var(--bg-2), var(--bg));
+    z-index: 0;
+}
+/* Grid mesh */
+.slide::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: clamp(40px, 5vw, 72px) clamp(40px, 5vw, 72px);
+    mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, #000 30%, transparent 85%);
+    -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 45%, #000 30%, transparent 85%);
+    z-index: 0;
+    opacity: 0.7;
+}
+
+.slide-content { position: relative; z-index: 2; gap: var(--content-gap); }
+
+/* ---------- Header row ---------- */
+.eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55em;
+    width: fit-content;
+    font-size: var(--small-size);
+    font-weight: 700;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--cyan);
+}
+.eyebrow .dot {
+    width: 0.55em; height: 0.55em; border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan);
+    animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:.35; transform:scale(.8);} 50%{opacity:1; transform:scale(1);} }
+
+.headline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: clamp(0.5rem, 2vw, 2rem);
+}
+
+h1 {
+    font-family: "Clash Display", sans-serif;
+    font-weight: 700;
+    font-size: var(--title-size);
+    line-height: 0.92;
+    letter-spacing: -0.02em;
+}
+h1 .grad {
+    background: linear-gradient(105deg, var(--cyan), var(--ink) 45%, var(--magenta));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.tagline {
+    font-size: var(--h2-size);
+    font-weight: 500;
+    color: var(--ink);
+    max-width: 22ch;
+    line-height: 1.15;
+}
+.tagline b { color: var(--cyan); font-weight: 700; }
+
+/* plain-english what-it-is line */
+.what {
+    font-size: var(--body-size);
+    color: var(--ink-dim);
+    max-width: 64ch;
+    line-height: 1.5;
+    border-left: 2px solid var(--magenta);
+    padding-left: clamp(0.7rem, 1.5vw, 1.1rem);
+}
+.what strong { color: var(--ink); font-weight: 700; }
+
+/* ---------- Tech grid ---------- */
+.engine-label {
+    font-size: var(--small-size);
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 700;
+}
+.grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: clamp(0.6rem, 1.4vw, 1.1rem);
+}
+.card {
+    position: relative;
+    background: linear-gradient(160deg, rgba(20, 32, 60, 0.85), rgba(9, 14, 28, 0.85));
+    border: 1px solid var(--line);
+    border-radius: clamp(12px, 1.4vw, 18px);
+    padding: clamp(0.85rem, 1.8vw, 1.4rem);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(0.3rem, 0.8vw, 0.55rem);
+    overflow: hidden;
+    transition: transform .3s ease, border-color .3s ease, box-shadow .3s ease;
+}
+.card::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0; top: 0;
+    height: 3px;
+    background: var(--accent);
+    box-shadow: 0 0 16px var(--accent);
+}
+.card:hover {
+    transform: translateY(-5px);
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+}
+.card .tname {
+    font-family: "Clash Display", sans-serif;
+    font-size: var(--h3-size);
+    font-weight: 600;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+.card .role {
+    font-size: var(--small-size);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 700;
+}
+.card .desc {
+    font-size: var(--body-size);
+    line-height: 1.42;
+    color: var(--ink);
+}
+.card .desc em { color: var(--accent); font-style: normal; font-weight: 700; }
+
+.c-tavily     { --accent: #36e6ff; }
+.c-prometheux { --accent: #ff44d4; }
+.c-clickhouse { --accent: #ffd24a; }
+
+/* ---------- Reveal animation ---------- */
+.reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
+.in .reveal { opacity: 1; transform: none; }
+.in .reveal:nth-child(1){ transition-delay:.05s; }
+.in .reveal:nth-child(2){ transition-delay:.15s; }
+.in .reveal:nth-child(3){ transition-delay:.25s; }
+.in .reveal:nth-child(4){ transition-delay:.35s; }
+.in .grid .card:nth-child(1){ transition-delay:.40s; }
+.in .grid .card:nth-child(2){ transition-delay:.50s; }
+.in .grid .card:nth-child(3){ transition-delay:.60s; }
+
+/* ---------- Footer hint ---------- */
+.footer {
+    position: absolute;
+    bottom: clamp(0.6rem, 2vh, 1.4rem);
+    left: var(--slide-padding);
+    right: var(--slide-padding);
+    z-index: 3;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: var(--small-size);
+    color: var(--ink-dim);
+    letter-spacing: 0.12em;
+}
+.footer .flow { display: flex; gap: .6em; align-items: center; flex-wrap: wrap; }
+.footer .chip { color: var(--ink); }
+.footer .arrow { color: var(--cyan); }
+
+/* ---------- Responsive ---------- */
+@media (max-height: 760px) {
+    :root { --content-gap: clamp(0.6rem, 1.6vh, 1.2rem); }
+    .what { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+}
+@media (max-height: 600px) {
+    :root { --title-size: clamp(1.8rem, 6vw, 3rem); --slide-padding: clamp(0.8rem, 3vw, 2rem); }
+    .footer { display: none; }
+}
+@media (max-width: 760px) {
+    .grid { grid-template-columns: 1fr; }
+    .what { -webkit-line-clamp: 4; }
+    .tagline { max-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .2s !important; }
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; }
+}
+</style>
+</head>
+<body>
+<main>
+    <section class="slide" id="slide-1" aria-label="Find My Model overview">
+        <div class="slide-content">
+
+            <span class="eyebrow reveal"><span class="dot"></span> Live model intelligence</span>
+
+            <div class="headline reveal">
+                <h1>Find&nbsp;My&nbsp;<span class="grad">Model</span></h1>
+                <p class="tagline">Ship your app using the <b>right model.</b> Stop guessing.</p>
+            </div>
+
+            <p class="what reveal">
+                Pick the wrong AI model and you burn cash, blow your latency budget, or ship something that breaks.
+                <strong>Find My Model interviews your workload, tests your real prompts, researches the live market,
+                and hands you one evidence-backed answer:</strong> the exact model, provider, hardware and routing to deploy.
+            </p>
+
+            <span class="engine-label reveal">The engine — three systems working together</span>
+
+            <div class="grid reveal">
+                <article class="card c-tavily">
+                    <span class="tname">◈ Tavily</span>
+                    <span class="role">The Eyes — live web research</span>
+                    <p class="desc">Scours the open web in real time for <em>today's</em> prices, benchmarks and model launches — so recommendations are never built on stale, hardcoded data.</p>
+                </article>
+
+                <article class="card c-prometheux">
+                    <span class="tname">◆ Prometheux</span>
+                    <span class="role">The Brain — grounded reasoning</span>
+                    <p class="desc">Builds an <em>ontology + lineage</em> of your needs and every candidate, so each pick is traceable to cited evidence — <em>not</em> a hallucinated guess.</p>
+                </article>
+
+                <article class="card c-clickhouse">
+                    <span class="tname">▣ ClickHouse</span>
+                    <span class="role">The Memory — it learns</span>
+                    <p class="desc">Logs every benchmark, cost and latency from every run, so the product gets <em>sharper over time</em> instead of starting from zero.</p>
+                </article>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span class="flow">
+                <span class="chip">Your workload</span><span class="arrow">→</span>
+                <span class="chip">Research</span><span class="arrow">→</span>
+                <span class="chip">Grounded reasoning</span><span class="arrow">→</span>
+                <span class="chip">Deploy-ready answer</span>
+            </span>
+            <span>findmymodel.ai</span>
+        </div>
+    </section>
+</main>
+
+<script>
+/* Minimal controller — reveal on enter + keyboard/wheel/touch nav (scaffolded for multi-slide). */
+class Deck {
+    constructor() {
+        this.slides = [...document.querySelectorAll('.slide')];
+        this.i = 0;
+        this.observe();
+        this.bind();
+    }
+    observe() {
+        const io = new IntersectionObserver((entries) => {
+            entries.forEach(e => e.target.classList.toggle('in', e.isIntersecting));
+        }, { threshold: 0.4 });
+        this.slides.forEach(s => io.observe(s));
+        // ensure first slide reveals immediately
+        requestAnimationFrame(() => this.slides[0].classList.add('in'));
+    }
+    go(n) {
+        this.i = Math.max(0, Math.min(this.slides.length - 1, n));
+        this.slides[this.i].scrollIntoView({ behavior: 'smooth' });
+    }
+    bind() {
+        addEventListener('keydown', (e) => {
+            if (['ArrowDown','ArrowRight','PageDown',' '].includes(e.key)) { e.preventDefault(); this.go(this.i + 1); }
+            if (['ArrowUp','ArrowLeft','PageUp'].includes(e.key)) { e.preventDefault(); this.go(this.i - 1); }
+            if (e.key === 'Home') this.go(0);
+            if (e.key === 'End') this.go(this.slides.length - 1);
+        });
+        let ty = 0;
+        addEventListener('touchstart', (e) => ty = e.touches[0].clientY, { passive: true });
+        addEventListener('touchend', (e) => {
+            const dy = ty - e.changedTouches[0].clientY;
+            if (Math.abs(dy) > 50) this.go(this.i + (dy > 0 ? 1 : -1));
+        }, { passive: true });
+    }
+}
+new Deck();
+</script>
+</body>
+</html>
