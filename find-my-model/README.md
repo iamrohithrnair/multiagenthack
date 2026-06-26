@@ -57,6 +57,8 @@ Latest live verification:
 - lineage fetch total: `6` rows
 - the full demo backend stream reaches `context_layer`, `recommendation`, and `complete`
 
+![Prometheux ontology canvas](docs/prometheux-ontology-canvas.png)
+
 ## Run Locally
 
 ```bash
