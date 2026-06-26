@@ -175,7 +175,7 @@ function ContextLayer({ graph }: { graph: ContextGraph }) {
         </div>
         <div className="context-edge-list">
           {graph.edges.map((edge) => (
-            <span key={`${edge.from}-${edge.to}`}>{edge.from} -&gt; {edge.to}</span>
+            <span key={`${edge.from}-${edge.to}`}>{scrub(edge.from)} -&gt; {scrub(edge.to)}</span>
           ))}
         </div>
       </div>
@@ -192,13 +192,13 @@ function ContextLayer({ graph }: { graph: ContextGraph }) {
         </div>
         <div>
           <span>ontology</span>
-          <strong>{graph.ontology?.projectConcept ?? "waiting"}</strong>
-          <small>{(graph.ontology?.concepts ?? []).slice(0, 4).map((item) => item.label).join(" / ") || "waiting"}</small>
+          <strong>{scrub(graph.ontology?.projectConcept ?? "waiting")}</strong>
+          <small>{scrub((graph.ontology?.concepts ?? []).slice(0, 4).map((item) => item.label).join(" / ")) || "waiting"}</small>
         </div>
         <div>
           <span>lineage</span>
-          <strong>{graph.lineage?.projectConcept ?? "waiting"}</strong>
-          <small>{(graph.lineage?.steps ?? []).slice(0, 3).map((step) => `${step.from} -> ${step.to}`).join(" / ") || "waiting"}</small>
+          <strong>{scrub(graph.lineage?.projectConcept ?? "waiting")}</strong>
+          <small>{scrub((graph.lineage?.steps ?? []).slice(0, 3).map((step) => `${step.from} -> ${step.to}`).join(" / ")) || "waiting"}</small>
         </div>
         <div>
           <span>grounding</span>
@@ -262,13 +262,14 @@ export default function Home() {
   const prompts = useMemo(() => parsePrompts(promptsText), [promptsText]);
   const markdown = report?.markdown ?? "";
   const recoModel = (report?.primary?.model ?? "").toLowerCase().trim();
-
-  function isRecommended(model: ModelRow) {
-    if (!recoModel) return false;
-    const name = model.name.toLowerCase().trim();
-    const id = model.id.toLowerCase().trim();
-    return name === recoModel || id === recoModel || name.includes(recoModel) || recoModel.includes(name) || id.includes(recoModel);
-  }
+  const recoMatchId = useMemo(() => {
+    if (!recoModel || modelCatalog.length === 0) return null;
+    const norm = (value: string) => value.toLowerCase().trim();
+    const exact = modelCatalog.find((m) => norm(m.name) === recoModel || norm(m.id) === recoModel);
+    if (exact) return exact.id;
+    const partial = modelCatalog.find((m) => norm(m.name).includes(recoModel) || recoModel.includes(norm(m.name)) || norm(m.id).includes(recoModel));
+    return partial?.id ?? null;
+  }, [recoModel, modelCatalog]);
 
   const update = <K extends keyof WorkloadProfile>(key: K, value: WorkloadProfile[K]) => {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -503,15 +504,14 @@ export default function Home() {
                     <div className="reco-card">
                       <div className="reco-head">
                         <span className="reco-tag"><Trophy size={13} /> Recommended model</span>
-                        <span className="reco-confidence">{Math.round((report.primary.confidence ?? 0) * 100)}% confidence</span>
+                        {report.primary.confidence && <span className="reco-confidence">{report.primary.confidence} confidence</span>}
                       </div>
                       <strong className="reco-model">{report.primary.provider} · {report.primary.model}</strong>
                       <div className="reco-meta">
-                        <span><Timer size={13} />~{report.primary.estimatedLatencySeconds}s latency</span>
-                        <span><DollarSign size={13} />~${report.primary.estimatedMonthlyCostUsd.toLocaleString()}/mo</span>
-                        <span><Sparkles size={13} />{report.primary.expectedQuality}</span>
+                        {report.primary.cost && <span><DollarSign size={13} />{report.primary.cost}</span>}
+                        {report.primary.latency && <span><Timer size={13} />{report.primary.latency}</span>}
                       </div>
-                      <div className="reco-deploy">{report.primary.deployment} · {report.primary.hardware}</div>
+                      {report.primary.quality && <p className="reco-note"><Sparkles size={13} />{report.primary.quality}</p>}
                       <button className="trial-cta" onClick={openTrial}>
                         <Rocket size={15} /> Deploy this stack — start free trial <ArrowRight size={15} />
                       </button>
@@ -540,7 +540,7 @@ export default function Home() {
               <div className="model-catalog-title"><span><Cpu size={14} /> Model universe</span><strong>{modelCatalog.length || "pending"}</strong></div>
               <div className="model-list">
                 {modelCatalog.length === 0 ? <div className="model-row muted">Your ranked model catalog appears here after analysis.</div> : modelCatalog.map((model) => {
-                  const recommended = isRecommended(model);
+                  const recommended = model.id === recoMatchId;
                   return (
                     <div className={`model-row ${recommended ? "recommended" : ""}`} key={model.id}>
                       <strong>{model.name}{recommended && <span className="reco-pill"><Trophy size={11} /> Recommended</span>}</strong>

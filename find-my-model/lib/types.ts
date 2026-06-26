@@ -40,11 +40,11 @@ export interface RecommendationReport {
     provider: string;
     model: string;
     hardware: string;
-    deployment: string;
-    estimatedLatencySeconds: number;
-    estimatedMonthlyCostUsd: number;
-    expectedQuality: string;
-    confidence: number;
+    routing: string;
+    latency: string;
+    cost: string;
+    quality: string;
+    confidence: string;
   };
   alternatives: Array<{
     label: string;

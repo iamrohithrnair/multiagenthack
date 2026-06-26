@@ -1303,6 +1303,23 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 600;
 }
 
+.reco-note {
+  margin: 0;
+  display: flex;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.reco-note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--success-ink);
+}
+
 /* ---------------------------------------------------------- */
 /* Agent trace aside                                           */
 /* ---------------------------------------------------------- */

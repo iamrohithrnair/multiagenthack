@@ -1087,6 +1087,26 @@ def enforce_hard_filters(recommendation: dict[str, Any], profile: dict[str, Any]
     return recommendation
 
 
+def display_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def normalize_recommendation(recommendation: dict[str, Any]) -> dict[str, Any]:
+    primary = recommendation.get("primary") if isinstance(recommendation.get("primary"), dict) else {}
+    recommendation["primary"] = {
+        key: display_text(primary.get(key))
+        for key in ["provider", "model", "hardware", "routing", "latency", "cost", "quality", "confidence"]
+    }
+    recommendation["markdown"] = display_text(recommendation.get("markdown"))
+    return recommendation
+
+
 async def run(request: dict[str, Any]) -> None:
     run_id = str(uuid.uuid4())
     clickhouse = ClickHouseAdapter(run_id)
@@ -1149,6 +1169,7 @@ async def run(request: dict[str, Any]) -> None:
     recommendation = await adk_recommend(request, prompts, evidence, ranked_models, ontology, lineage)
     recommendation = enforce_hard_filters(recommendation, profile, ranked_models)
     recommendation = enforce_grounding(recommendation, evidence, lineage)
+    recommendation = normalize_recommendation(recommendation)
     emit("recommendation", recommendation)
     record("recommendation", recommendation)
     emit("complete", {"runId": run_id})
@@ -1165,6 +1186,7 @@ def selfcheck() -> None:
         {"provider": "anthropic", "name": "Claude Opus 4.8", "id": "anthropic/claude-opus-4-8", "context": 1000000, "inputModalities": ["text", "image"]},
     ]
     assert enforce_hard_filters(recommendation, {"voice": True, "vision": True, "contextTokens": 200000}, ranked)["primary"]["provider"] == "google"
+    assert normalize_recommendation({"primary": {"cost": {"input": 5, "output": 30}}, "markdown": None})["primary"]["cost"] == '{"input": 5, "output": 30}'
     evidence = evidence_packets([{"adapter": "models.dev", "title": "catalog", "url": "https://models.dev/"}])
     rag_profile = {
         "product": "Support bot",
