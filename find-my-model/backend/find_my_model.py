@@ -43,6 +43,9 @@ FRONTIER_MODEL_IDS = [
     "google/gemini-3.1-pro-preview",
 ]
 
+FAST_MODEL_WORDS = ("fast", "flash", "instant", "mini", "nano", "haiku", "turbo", "realtime")
+QUALITY_MODEL_WORDS = ("opus", "fable", "gpt-5.5", "gemini-3.1-pro", "pro")
+
 
 def load_env() -> None:
     for env_path in [Path.cwd() / ".env", Path.cwd().parent / ".env", Path(__file__).resolve().parents[2] / ".env"]:
@@ -574,6 +577,7 @@ def model_summary(model: dict[str, Any]) -> dict[str, Any]:
         "openWeights": bool(model.get("open_weights")),
         "toolCall": bool(model.get("tool_call")),
         "structuredOutput": bool(model.get("structured_output")),
+        "streaming": model.get("streaming"),
         "reasoning": bool(model.get("reasoning")),
         "releaseDate": model.get("release_date"),
         "inputCost": cost.get("input"),
@@ -608,18 +612,18 @@ def model_score(model: dict[str, Any], profile: dict[str, Any]) -> tuple[Any, ..
     output_cost = model.get("outputCost")
     cost = float(input_cost or 99) + float(output_cost or 99)
     wants_context = int(profile.get("contextTokens") or (1000000 if profile.get("longContext") else 32000))
-    fast_words = ("fast", "flash", "instant", "mini", "nano", "haiku", "turbo", "realtime")
-    quality_words = ("opus", "fable", "gpt-5.5", "gemini-3.1-pro", "pro")
     return (
+        1 if not hard_filter_failures(model, profile) else 0,
+        1 if profile.get("canSelfHost") and model.get("openWeights") else 0,
         1 if context >= wants_context else 0,
         1 if profile.get("voice") and "audio" in inputs else 0,
         1 if profile.get("vision") and "image" in inputs else 0,
         1 if profile.get("toolCalling") and model.get("toolCall") else 0,
         1 if profile.get("structuredOutput") and model.get("structuredOutput") else 0,
         1 if model_id in FRONTIER_MODEL_IDS and profile.get("frontierFirst", True) else 0,
-        1 if profile.get("realTime") and any(word in name for word in fast_words) else 0,
-        1 if (profile.get("fastModel") or profile.get("priority") == "fast") and any(word in name for word in fast_words) else 0,
-        1 if profile.get("priority") == "best" and any(word in name for word in quality_words) else 0,
+        1 if profile.get("realTime") and is_fast_model(model) else 0,
+        1 if (profile.get("fastModel") or profile.get("priority") == "fast") and is_fast_model(model) else 0,
+        1 if profile.get("priority") == "best" and any(word in name for word in QUALITY_MODEL_WORDS) else 0,
         -cost if profile.get("priority") == "cheap" else 0,
         context,
         str(model.get("releaseDate") or ""),
@@ -688,6 +692,7 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
         {"id": "tool_calling", "label": "tool calls", "hard": bool(profile.get("toolCalling"))},
         {"id": "structured_output", "label": "structured output", "hard": bool(profile.get("structuredOutput"))},
         {"id": "streaming", "label": "streaming", "hard": bool(profile.get("streaming"))},
+        {"id": "self_host", "label": "self-hostable open weights", "hard": bool(profile.get("canSelfHost"))},
         {"id": "rag", "label": f"RAG over {vector_db} vector store", "hard": bool(profile.get("rag"))},
         {"id": "document_uploads", "label": f"{len(uploaded_files)} uploaded context files", "hard": bool(profile.get("documentUpload") or profile.get("imageUpload"))},
     ]
@@ -975,6 +980,10 @@ a better fit for cost, privacy, deployment, or latency.
 Voice and vision are hard requirements when true; voice requires audio input support and vision
 requires image input support. If frontierFirst is true, pick the highest-ranked candidate that
 satisfies the hard filters unless the evidence says it is unavailable.
+All selected filters are hard deployment constraints where the model catalog has metadata: context,
+voice/audio input, vision/image input, tool calling, structured output, self-host/open weights,
+fast or real-time suitability, and any explicit streaming support signal. If canSelfHost is true,
+do not recommend proprietary hosted-only models such as GPT, Claude, or Gemini as the primary model.
 Return only valid JSON with keys: primary, alternatives, routing, architecture, risks, markdown, grounding.
 grounding must include evidenceIds and lineageStepIds used for the recommendation.
 
@@ -1046,15 +1055,43 @@ def enforce_grounding(recommendation: dict[str, Any], evidence: list[dict[str, A
     return recommendation
 
 
-def model_matches_hard_filters(model: dict[str, Any], profile: dict[str, Any]) -> bool:
+def required_context_tokens(profile: dict[str, Any]) -> int:
+    return int(profile.get("contextTokens") or (1000000 if profile.get("longContext") else 0))
+
+
+def is_fast_model(model: dict[str, Any]) -> bool:
+    name = f"{model.get('id') or ''} {model.get('name') or ''}".lower()
+    return any(word in name for word in FAST_MODEL_WORDS)
+
+
+def hard_filter_failures(model: dict[str, Any], profile: dict[str, Any]) -> list[str]:
     inputs = set(model.get("inputModalities") or [])
     context = int(model.get("context") or 0)
-    required_context = int(profile.get("contextTokens") or 0)
-    return (
-        (not required_context or context >= required_context)
-        and (not profile.get("voice") or "audio" in inputs)
-        and (not profile.get("vision") or "image" in inputs)
-    )
+    required_context = required_context_tokens(profile)
+    failures: list[str] = []
+    if required_context and context < required_context:
+        failures.append(f"context<{required_context}")
+    if profile.get("voice") and "audio" not in inputs:
+        failures.append("missing_audio_input")
+    if profile.get("vision") and "image" not in inputs:
+        failures.append("missing_image_input")
+    if profile.get("toolCalling") and not model.get("toolCall"):
+        failures.append("missing_tool_calling")
+    if profile.get("structuredOutput") and not model.get("structuredOutput"):
+        failures.append("missing_structured_output")
+    if profile.get("canSelfHost") and not model.get("openWeights"):
+        failures.append("not_open_weights")
+    if (profile.get("fastModel") or profile.get("priority") == "fast") and not is_fast_model(model):
+        failures.append("not_fast_model")
+    if profile.get("realTime") and not is_fast_model(model):
+        failures.append("not_realtime_suitable")
+    if profile.get("streaming") and model.get("streaming") is False:
+        failures.append("missing_streaming")
+    return failures
+
+
+def model_matches_hard_filters(model: dict[str, Any], profile: dict[str, Any]) -> bool:
+    return not hard_filter_failures(model, profile)
 
 
 def find_recommended_model(recommendation: dict[str, Any], ranked_models: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1068,21 +1105,35 @@ def enforce_hard_filters(recommendation: dict[str, Any], profile: dict[str, Any]
     if current and model_matches_hard_filters(current, profile):
         return recommendation
     replacement = next((model for model in ranked_models if model_matches_hard_filters(model, profile)), None)
+    missing = hard_filter_failures(current, profile) if current else ["recommended_model_not_in_catalog"]
     if not replacement:
+        previous = recommendation.get("primary") or {}
+        recommendation["alternatives"] = [{"label": "AI recommendation before hard-filter enforcement", **previous}, *(recommendation.get("alternatives") or [])]
+        recommendation["primary"] = {
+            "provider": "No matching catalog model",
+            "model": "No model satisfies every selected hard filter",
+            "hardware": "n/a",
+            "routing": "Relax one or more hard filters before deployment.",
+            "latency": "unknown",
+            "cost": "unknown",
+            "quality": f"Rejected the AI recommendation because it failed: {', '.join(missing)}.",
+            "confidence": "High on filter enforcement; no viable catalog replacement found.",
+        }
+        recommendation["markdown"] = f"No catalog model satisfied every selected hard filter. Rejected the AI recommendation because it failed: {', '.join(missing)}.\n\n" + str(recommendation.get("markdown") or "")
         return recommendation
     previous = recommendation.get("primary") or {}
     recommendation["alternatives"] = [{"label": "AI recommendation before hard-filter enforcement", **previous}, *(recommendation.get("alternatives") or [])]
     recommendation["primary"] = {
         "provider": replacement.get("provider"),
         "model": replacement.get("name"),
-        "hardware": "Provider-managed API",
-        "routing": "Primary route because it satisfies the selected hard filters before lower-ranked alternatives.",
+        "hardware": "Self-hostable open weights" if replacement.get("openWeights") else "Provider-managed API",
+        "routing": "Primary route because it satisfies every enforceable selected filter before lower-ranked alternatives.",
         "latency": "Use the ranked provider endpoint directly; add a faster secondary route if production latency misses target.",
         "cost": "Pricing not present in models.dev for this entry; verify provider pricing before launch.",
         "quality": f"Ranked first for requested filters: context {replacement.get('context'):,}, modalities {', '.join(replacement.get('inputModalities') or [])}.",
         "confidence": "High on feature fit from models.dev; pricing confidence depends on provider evidence.",
     }
-    note = f"Primary adjusted to {replacement.get('name')} because the selected hard filters require native support for the requested modalities/context.\n\n"
+    note = f"Primary adjusted to {replacement.get('name')} because the AI recommendation failed: {', '.join(missing)}.\n\n"
     recommendation["markdown"] = note + str(recommendation.get("markdown") or "")
     return recommendation
 
@@ -1182,10 +1233,25 @@ def selfcheck() -> None:
     assert profiled[2]["category"] == "coding"
     recommendation = {"primary": {"provider": "Anthropic", "model": "Claude Opus 4.8"}, "alternatives": [], "markdown": ""}
     ranked = [
+        {"provider": "openai", "name": "GPT-5.5", "id": "openai/gpt-5.5", "context": 1048576, "inputModalities": ["text", "image"], "toolCall": True, "structuredOutput": True},
         {"provider": "google", "name": "Gemini 3.1 Pro Preview", "id": "google/gemini-3.1-pro-preview", "context": 1048576, "inputModalities": ["text", "image", "audio"]},
         {"provider": "anthropic", "name": "Claude Opus 4.8", "id": "anthropic/claude-opus-4-8", "context": 1000000, "inputModalities": ["text", "image"]},
+        {"provider": "meta", "name": "Llama 4 Maverick Fast", "id": "meta/llama-4-maverick-fast", "context": 1000000, "inputModalities": ["text", "image"], "openWeights": True, "toolCall": True, "structuredOutput": True},
     ]
     assert enforce_hard_filters(recommendation, {"voice": True, "vision": True, "contextTokens": 200000}, ranked)["primary"]["provider"] == "google"
+    self_hosted = enforce_hard_filters(
+        {"primary": {"provider": "OpenAI", "model": "GPT-5.5"}, "alternatives": [], "markdown": ""},
+        {"canSelfHost": True, "vision": True, "toolCalling": True, "structuredOutput": True, "contextTokens": 200000},
+        ranked,
+    )
+    assert self_hosted["primary"]["provider"] == "meta"
+    assert "not_open_weights" in self_hosted["markdown"]
+    no_match = enforce_hard_filters(
+        {"primary": {"provider": "OpenAI", "model": "GPT-5.5"}, "alternatives": [], "markdown": ""},
+        {"canSelfHost": True, "voice": True, "contextTokens": 2000000},
+        ranked,
+    )
+    assert no_match["primary"]["provider"] == "No matching catalog model"
     assert normalize_recommendation({"primary": {"cost": {"input": 5, "output": 30}}, "markdown": None})["primary"]["cost"] == '{"input": 5, "output": 30}'
     evidence = evidence_packets([{"adapter": "models.dev", "title": "catalog", "url": "https://models.dev/"}])
     rag_profile = {
@@ -1203,6 +1269,7 @@ def selfcheck() -> None:
     lineage = build_lineage(rag_profile, evidence)
     assert "find_my_model_candidate" in ontology["definition"]
     assert "find_my_model_ontology(Type, Entity, Label) <- find_my_model_ontology_fact(Type, Entity, Label)." in ontology["definition"]
+    assert "self-hostable open weights" in ontology["definition"]
     assert "find_my_model_rag_source" in ontology["definition"]
     assert any(item["id"] == "rag" and item["hard"] for item in ontology["requirements"])
     assert '@output("find_my_model_lineage").' in lineage["definition"]
