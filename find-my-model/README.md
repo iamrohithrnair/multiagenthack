@@ -48,9 +48,11 @@ save concept -> run concept -> poll execution status -> fetch output predicate r
 
 Latest live verification:
 
-- concept save/list works and shows the corrected ontology graph shape
+- ontology fields: `Subject`, `Relation`, `Object`
+- lineage fields: `Step`, `Source`, `Target`, `Label`
+- ontology fetch total: `118` rows
+- lineage fetch total: `6` rows
 - the full demo backend stream reaches `context_layer`, `recommendation`, and `complete`
-- Prometheux run/fetch currently returns `Selected compute resource is not reachable`; once the selected Prometheux compute machine is running, the same app flow will populate/fetch rows
 
 ## Run Locally
 
