@@ -39,6 +39,7 @@ The Prometheux dashboard/console should show two separate concepts in project `f
 - `find_my_model_lineage`
 
 The ontology is saved as graph triples with fields `Subject`, `Relation`, and `Object`. The lineage is saved separately with fields `Step`, `Source`, `Target`, and `Label`.
+The Ontology dashboard canvas is also saved through Prometheux `save-ontology` with nodes and edges, so the visual Ontology tab is not empty.
 
 The backend follows the documented concept lifecycle:
 
@@ -50,7 +51,9 @@ Latest live verification:
 
 - ontology fields: `Subject`, `Relation`, `Object`
 - lineage fields: `Step`, `Source`, `Target`, `Label`
-- ontology fetch total: `118` rows
+- ontology canvas: `6` nodes, `7` edges
+- lineage visual graph: `find_my_model_ontology -> find_my_model_lineage`
+- ontology fetch total: `66` rows
 - lineage fetch total: `6` rows
 - the full demo backend stream reaches `context_layer`, `recommendation`, and `complete`
 

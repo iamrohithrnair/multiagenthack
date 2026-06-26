@@ -762,6 +762,30 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
     }
 
 
+def ontology_canvas_graph(ontology: dict[str, Any]) -> dict[str, Any]:
+    labels = {str(item.get("id")): str(item.get("label") or item.get("id")) for item in ontology.get("concepts") or []}
+    requirements = ontology.get("requirements") or []
+    hard_count = sum(1 for item in requirements if item.get("hard"))
+    nodes = [
+        {"id": "workload", "label": labels.get("workload", "Workload"), "description": "Product goal, prompts, and hard requirements.", "color": "#36e6ff", "x": -520, "y": 0, "customFields": {}},
+        {"id": "requirements", "label": "Requirements", "description": f"{hard_count} hard requirements out of {len(requirements)} captured constraints.", "color": "#8b5cf6", "x": -260, "y": -130, "customFields": {}},
+        {"id": "rag_context", "label": labels.get("rag_agent", "RAG Context"), "description": "Vector database, uploaded documents, images, and retrieval notes.", "color": "#10b981", "x": -260, "y": 130, "customFields": {}},
+        {"id": "evidence", "label": labels.get("evidence_packet", "Evidence Packets"), "description": "models.dev, Tavily, Hugging Face, and Prometheux research findings.", "color": "#f59e0b", "x": 20, "y": 0, "customFields": {}},
+        {"id": "candidate_models", "label": labels.get("candidate_model", "Candidate Models"), "description": "Ranked model candidates filtered against the workload.", "color": "#ec4899", "x": 300, "y": -80, "customFields": {}},
+        {"id": "recommendation", "label": labels.get("recommendation", "Recommendation"), "description": "Grounded model stack recommendation with cited evidence and lineage.", "color": "#22c55e", "x": 560, "y": 0, "customFields": {}},
+    ]
+    edges = [
+        {"id": "e1", "from": "workload", "to": "requirements", "label": "requires", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e2", "from": "workload", "to": "rag_context", "label": "uses", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e3", "from": "requirements", "to": "candidate_models", "label": "filters", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e4", "from": "rag_context", "to": "evidence", "label": "grounds", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e5", "from": "evidence", "to": "candidate_models", "label": "ranks", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e6", "from": "candidate_models", "to": "recommendation", "label": "supports", "description": "", "bidirectional": False, "customFields": {}},
+        {"id": "e7", "from": "evidence", "to": "recommendation", "label": "cites", "description": "", "bidirectional": False, "customFields": {}},
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
 def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
     web_ids = [item["id"] for item in evidence if item.get("source") in {"prometheux", "tavily", "huggingface"}]
     rag_label = f"Index uploaded docs/images and retrieve from {profile.get('vectorDatabase') or 'selected vector store'}"
@@ -781,7 +805,7 @@ def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> di
         lines.append(vadalog_fact("find_my_model_lineage_fact", step["id"], step["from"], step["to"], step["label"]))
         for evidence_id in step["evidenceIds"]:
             lines.append(vadalog_fact("find_my_model_lineage_evidence", step["id"], evidence_id))
-    lines.append("find_my_model_lineage(Step, Source, Target, Label) <- find_my_model_lineage_fact(Step, Source, Target, Label).")
+    lines.append('find_my_model_lineage(Step, Source, Target, Label) <- find_my_model_lineage_fact(Step, Source, Target, Label), find_my_model_ontology("workload", "requires", "requirement:context").')
     return {
         "projectConcept": "find_my_model_lineage",
         "outputPredicate": "find_my_model_lineage",
@@ -817,12 +841,24 @@ def prometheux_populate_concept(project_id: str, concept: dict[str, Any]) -> dic
     return result
 
 
+def prometheux_save_ontology_graph(project_id: str, ontology: dict[str, Any]) -> dict[str, Any]:
+    graph = ontology_canvas_graph(ontology)
+    result: dict[str, Any] = {"status": "saved", "nodes": len(graph["nodes"]), "edges": len(graph["edges"])}
+    try:
+        prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/save-ontology", {"project": {"scope": "user"}, "ontology_data": graph})
+    except Exception as exc:
+        result = {"status": "save_failed", "error": str(exc)[:800]}
+    emit("adapter_status", {"adapter": "prometheux", "projectId": project_id, "concept": "ontology_canvas", **result})
+    return result
+
+
 def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: dict[str, Any]) -> dict[str, Any]:
     existing = prometheux_concept_names(project_id)
     prometheux_save_concept(project_id, ontology["projectConcept"], ontology["definition"], ontology["outputPredicate"], "Find My Model ontology graph: workload, requirements, RAG, candidates, and evidence relationships.", existing)
     prometheux_save_concept(project_id, lineage["projectConcept"], lineage["definition"], lineage["outputPredicate"], "Find My Model lineage: source evidence to ontology to recommendation.", existing)
+    ontology_graph = prometheux_save_ontology_graph(project_id, ontology)
     concepts = [prometheux_populate_concept(project_id, ontology), prometheux_populate_concept(project_id, lineage)]
-    report = {"projectId": project_id, "concepts": concepts}
+    report = {"projectId": project_id, "concepts": concepts, "ontologyGraph": ontology_graph}
     emit("adapter_status", {"adapter": "prometheux", "status": "saved_and_checked_ontology_lineage", **report})
     return report
 
@@ -1292,8 +1328,11 @@ def selfcheck() -> None:
     assert "self-hostable open weights" in ontology["definition"]
     assert "find_my_model_rag_source" in ontology["definition"]
     assert any(item["id"] == "rag" and item["hard"] for item in ontology["requirements"])
+    graph = ontology_canvas_graph(ontology)
+    assert len(graph["nodes"]) == 6
+    assert any(edge["from"] == "candidate_models" and edge["to"] == "recommendation" for edge in graph["edges"])
     assert '@output("find_my_model_lineage").' in lineage["definition"]
-    assert "find_my_model_lineage(Step, Source, Target, Label) <- find_my_model_lineage_fact(Step, Source, Target, Label)." in lineage["definition"]
+    assert 'find_my_model_ontology("workload", "requires", "requirement:context")' in lineage["definition"]
     assert "@chase(" not in lineage["definition"]
     assert any(step["to"] == "rag_context" for step in lineage["steps"])
     assert prometheux_error_code(RuntimeError('{"error_code":"NO_ACTIVE_COMPUTE"}')) == "NO_ACTIVE_COMPUTE"
