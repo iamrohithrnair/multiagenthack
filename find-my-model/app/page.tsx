@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Brain, Database, DollarSign, Download, FileText, Globe2, Layers3, Link2, Loader2, Mic2, Network, Play, Search, SlidersHorizontal, Timer, Upload, Zap } from "lucide-react";
+import { Activity, ArrowRight, Boxes, Brain, Check, Cpu, Database, DollarSign, Download, FileText, Globe2, Layers3, Link2, Loader2, Mail, Network, Play, Rocket, ShieldCheck, Sparkles, SlidersHorizontal, Timer, Trophy, Upload, X, Zap } from "lucide-react";
 import type { RecommendationReport, WorkloadProfile } from "@/lib/types";
 
 const samplePrompts = `Classify a support ticket.
@@ -96,6 +96,13 @@ function parsePrompts(raw: string) {
   }
 }
 
+function scrub(value: string) {
+  return value
+    .replace(/https?:\/\/models\.dev\/?/gi, "live model catalog")
+    .replace(/models\.dev model catalog/gi, "live model catalog")
+    .replace(/models\.dev/gi, "live model catalog");
+}
+
 function eventText(type: string, data: unknown) {
   if (type === "log" || type === "phase" || type === "error") return String(data);
   if (type === "run_started") {
@@ -124,6 +131,7 @@ function eventText(type: string, data: unknown) {
   }
   if (type === "research_finding") {
     const d = data as { adapter: string; provider?: string; title?: string };
+    if ((d.adapter ?? "").includes("models.dev")) return "Live model catalog indexed";
     return `${d.adapter}: ${d.provider ?? d.title}`;
   }
   if (type === "browser_snapshot") {
@@ -131,8 +139,8 @@ function eventText(type: string, data: unknown) {
     return `web action: ${d.provider ?? d.url}`;
   }
   if (type === "model_catalog") {
-    const d = data as { source?: string; count?: number };
-    return `${d.source ?? "models.dev"}: ${d.count ?? 0} models ranked`;
+    const d = data as { count?: number };
+    return `Ranked ${d.count ?? 0} live models against your workload`;
   }
   if (type === "context_layer") {
     const d = data as { evidenceCount?: number };
@@ -243,8 +251,24 @@ export default function Home() {
   const [contextGraph, setContextGraph] = useState<ContextGraph>(defaultContextGraph);
   const [running, setRunning] = useState(false);
   const [settingUpClickHouse, setSettingUpClickHouse] = useState(false);
+  const [trialOpen, setTrialOpen] = useState(false);
+  const [trialEmail, setTrialEmail] = useState("");
+  const [trialDone, setTrialDone] = useState(false);
+
+  const openTrial = () => {
+    setTrialDone(false);
+    setTrialOpen(true);
+  };
   const prompts = useMemo(() => parsePrompts(promptsText), [promptsText]);
   const markdown = report?.markdown ?? "";
+  const recoModel = (report?.primary?.model ?? "").toLowerCase().trim();
+
+  function isRecommended(model: ModelRow) {
+    if (!recoModel) return false;
+    const name = model.name.toLowerCase().trim();
+    const id = model.id.toLowerCase().trim();
+    return name === recoModel || id === recoModel || name.includes(recoModel) || recoModel.includes(name) || id.includes(recoModel);
+  }
 
   const update = <K extends keyof WorkloadProfile>(key: K, value: WorkloadProfile[K]) => {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -302,10 +326,10 @@ export default function Home() {
         for (const line of lines) {
           if (!line.trim()) continue;
           const msg = JSON.parse(line);
-          setEvents((current) => [{ type: msg.type, text: eventText(msg.type, msg.data), timestamp: msg.timestamp }, ...current].slice(0, 100));
+          setEvents((current) => [{ type: msg.type, text: scrub(eventText(msg.type, msg.data)), timestamp: msg.timestamp }, ...current].slice(0, 100));
           if (msg.type === "browser_snapshot") {
-            setBrowserSummary(msg.data.summary ?? msg.data.provider ?? "Research update");
-            setBrowserUrl(msg.data.url ?? "");
+            setBrowserSummary(scrub(msg.data.summary ?? msg.data.provider ?? "Research update"));
+            setBrowserUrl(scrub(msg.data.url ?? ""));
           }
           if (msg.type === "model_catalog") setModelCatalog(msg.data.models ?? []);
           if (msg.type === "context_layer") setContextGraph(msg.data);
@@ -353,8 +377,9 @@ export default function Home() {
           <div className="brand">
             <div className="brand-mark"><Brain size={26} /></div>
             <div>
-              <p className="eyebrow">Find My Model</p>
-              <h1>Model routing console for real workloads.</h1>
+              <p className="eyebrow">Live model intelligence</p>
+              <h1>Find My Model</h1>
+              <p className="tagline">Ship your app using the right model. Stop guessing.</p>
             </div>
           </div>
           <div className="topbar-actions">
@@ -365,7 +390,10 @@ export default function Home() {
             </div>
             <button className="run-button" onClick={run} disabled={running || (!prompts.length && !profile.goalPrompt.trim() && !profile.productUrl.trim())}>
               {running ? <Loader2 size={17} className="spin" /> : <Play size={17} />}
-              Analyze workload
+              {running ? "Analyzing…" : "Find my model"}
+            </button>
+            <button className="trial-button" onClick={openTrial}>
+              <Rocket size={17} /> Start free trial
             </button>
           </div>
         </div>
@@ -373,7 +401,7 @@ export default function Home() {
 
       <div className="layout">
         <section className="panel">
-          <div className="panel-title"><span><Brain size={16} /> Product Input</span></div>
+          <div className="panel-title"><span><Boxes size={16} /> Product Input</span></div>
           <div className="form">
             <div className="quick-start">
               <label><span><Link2 size={14} /> Product website</span><input placeholder="https://your-product.com" value={profile.productUrl} onChange={(e) => update("productUrl", e.target.value)} /></label>
@@ -466,15 +494,37 @@ export default function Home() {
             </section>
             <section className="panel">
               <div className="panel-title">
-                <span><Network size={16} /> Recommendation</span>
+                <span><Sparkles size={16} /> Recommendation</span>
                 <a className="secondary-button" href={markdown ? `data:text/markdown;charset=utf-8,${encodeURIComponent(markdown)}` : undefined} download="find-my-model-report.md"><Download size={15} />Markdown</a>
               </div>
-              <div className="report">{report ? report.markdown : (running ? "ADK is reasoning over structured context" : "Run the pipeline to generate the architecture")}</div>
+              <div className="report">
+                {report ? (
+                  <>
+                    <div className="reco-card">
+                      <div className="reco-head">
+                        <span className="reco-tag"><Trophy size={13} /> Recommended model</span>
+                        <span className="reco-confidence">{Math.round((report.primary.confidence ?? 0) * 100)}% confidence</span>
+                      </div>
+                      <strong className="reco-model">{report.primary.provider} · {report.primary.model}</strong>
+                      <div className="reco-meta">
+                        <span><Timer size={13} />~{report.primary.estimatedLatencySeconds}s latency</span>
+                        <span><DollarSign size={13} />~${report.primary.estimatedMonthlyCostUsd.toLocaleString()}/mo</span>
+                        <span><Sparkles size={13} />{report.primary.expectedQuality}</span>
+                      </div>
+                      <div className="reco-deploy">{report.primary.deployment} · {report.primary.hardware}</div>
+                      <button className="trial-cta" onClick={openTrial}>
+                        <Rocket size={15} /> Deploy this stack — start free trial <ArrowRight size={15} />
+                      </button>
+                    </div>
+                    {report.markdown}
+                  </>
+                ) : (running ? "Reasoning over your structured workload context…" : "Run the pipeline to generate your model architecture.")}
+              </div>
             </section>
           </div>
           <aside className="panel">
             <div className="panel-title">
-              <span><Search size={16} /> Agent Trace</span>
+              <span><Activity size={16} /> Agent Trace</span>
               <button className="secondary-button" onClick={setupClickHouse} disabled={settingUpClickHouse || running}>
                 {settingUpClickHouse ? <Loader2 size={15} /> : <Database size={15} />}
                 ClickHouse
@@ -487,14 +537,17 @@ export default function Home() {
               <div><Network size={16} />API</div>
             </div>
             <div className="model-catalog">
-              <div className="model-catalog-title"><span><Mic2 size={14} /> Model universe</span><strong>{modelCatalog.length || "pending"}</strong></div>
+              <div className="model-catalog-title"><span><Cpu size={14} /> Model universe</span><strong>{modelCatalog.length || "pending"}</strong></div>
               <div className="model-list">
-                {modelCatalog.length === 0 ? <div className="model-row muted">models.dev catalog appears here after analysis.</div> : modelCatalog.map((model) => (
-                  <div className="model-row" key={model.id}>
-                    <strong>{model.name}</strong>
-                    <span>{model.provider} · {model.context ? `${model.context.toLocaleString()} ctx` : "ctx unknown"} · {(model.inputModalities ?? []).join("/")}{model.openWeights ? " · open weights" : ""}</span>
-                  </div>
-                ))}
+                {modelCatalog.length === 0 ? <div className="model-row muted">Your ranked model catalog appears here after analysis.</div> : modelCatalog.map((model) => {
+                  const recommended = isRecommended(model);
+                  return (
+                    <div className={`model-row ${recommended ? "recommended" : ""}`} key={model.id}>
+                      <strong>{model.name}{recommended && <span className="reco-pill"><Trophy size={11} /> Recommended</span>}</strong>
+                      <span>{model.provider} · {model.context ? `${model.context.toLocaleString()} ctx` : "ctx unknown"} · {(model.inputModalities ?? []).join("/")}{model.openWeights ? " · open weights" : ""}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="events">
@@ -508,6 +561,38 @@ export default function Home() {
           </aside>
         </section>
       </div>
+
+      {trialOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" onClick={() => setTrialOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" aria-label="Close" onClick={() => setTrialOpen(false)}><X size={18} /></button>
+            {trialDone ? (
+              <div className="modal-success">
+                <div className="modal-badge ok"><Check size={26} /></div>
+                <h2>You&apos;re in. Welcome aboard.</h2>
+                <p>Your 14-day Pro trial is active. We sent setup steps to <strong>{trialEmail || "your inbox"}</strong>.</p>
+                <button className="trial-button wide" onClick={() => setTrialOpen(false)}>Start building <ArrowRight size={16} /></button>
+              </div>
+            ) : (
+              <form className="modal-body" onSubmit={(e) => { e.preventDefault(); setTrialDone(true); }}>
+                <div className="modal-badge"><Rocket size={24} /></div>
+                <h2>Start your free trial</h2>
+                <p>Ship the right model in minutes. Full access to the routing engine, grounded recommendations, and the live model catalog.</p>
+                <label className="modal-field">
+                  <Mail size={16} />
+                  <input type="email" required placeholder="you@company.com" value={trialEmail} onChange={(e) => setTrialEmail(e.target.value)} />
+                </label>
+                <button className="trial-button wide" type="submit"><Rocket size={16} /> Start free trial</button>
+                <div className="trust-row">
+                  <span><ShieldCheck size={14} /> No credit card</span>
+                  <span><Check size={14} /> 14-day Pro access</span>
+                  <span><Check size={14} /> Cancel anytime</span>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
