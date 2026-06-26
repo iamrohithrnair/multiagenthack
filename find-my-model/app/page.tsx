@@ -25,19 +25,42 @@ type ModelRow = {
 };
 type ContextNode = { id: string; label: string; kind: string; x: number; y: number };
 type ContextEdge = { from: string; to: string };
-type ContextGraph = { nodes: ContextNode[]; edges: ContextEdge[]; evidenceCount?: number };
+type OntologySummary = {
+  projectConcept?: string;
+  concepts?: Array<{ id: string; label: string; kind: string }>;
+  requirements?: Array<{ id: string; label: string; hard?: boolean }>;
+  evidenceIds?: string[];
+};
+type LineageSummary = {
+  projectConcept?: string;
+  steps?: Array<{ id: string; from: string; to: string; label: string; evidenceIds?: string[] }>;
+  policy?: string;
+};
+type ContextGraph = {
+  nodes: ContextNode[];
+  edges: ContextEdge[];
+  evidenceCount?: number;
+  evidenceIds?: string[];
+  ontology?: OntologySummary;
+  lineage?: LineageSummary;
+  groundingPolicy?: string;
+};
 
 const defaultContextGraph: ContextGraph = {
   nodes: [
     { id: "site", label: "Product website", kind: "input", x: 14, y: 50 },
     { id: "prometheux", label: "Prometheux context agent", kind: "agent", x: 36, y: 32 },
     { id: "models", label: "models.dev catalog", kind: "source", x: 36, y: 68 },
+    { id: "ontology", label: "Project ontology", kind: "ontology", x: 60, y: 38 },
+    { id: "lineage", label: "Project lineage", kind: "lineage", x: 60, y: 62 },
     { id: "recommendation", label: "Recommendation", kind: "output", x: 84, y: 50 },
   ],
   edges: [
     { from: "site", to: "prometheux" },
-    { from: "prometheux", to: "recommendation" },
-    { from: "models", to: "recommendation" },
+    { from: "prometheux", to: "ontology" },
+    { from: "models", to: "ontology" },
+    { from: "ontology", to: "lineage" },
+    { from: "lineage", to: "recommendation" },
   ],
 };
 
@@ -96,7 +119,15 @@ function eventText(type: string, data: unknown) {
   }
   if (type === "context_layer") {
     const d = data as { evidenceCount?: number };
-    return `Prometheux context graph ready (${d.evidenceCount ?? 0} evidence packets)`;
+    return `Prometheux context graph ready (${d.evidenceCount ?? 0} evidence packets, ontology + lineage)`;
+  }
+  if (type === "ontology") {
+    const d = data as { projectConcept?: string; concepts?: unknown[] };
+    return `Ontology saved in Prometheux (${d.projectConcept ?? "project concept"}, ${d.concepts?.length ?? 0} nodes)`;
+  }
+  if (type === "lineage") {
+    const d = data as { projectConcept?: string; steps?: unknown[] };
+    return `Lineage saved in Prometheux (${d.projectConcept ?? "project concept"}, ${d.steps?.length ?? 0} steps)`;
   }
   if (type === "recommendation") return "Recommendation ready";
   if (type === "complete") return "Pipeline complete";
@@ -106,21 +137,40 @@ function eventText(type: string, data: unknown) {
 function ContextLayer({ graph }: { graph: ContextGraph }) {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   return (
-    <div className="context-layer">
-      <svg className="context-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        {graph.edges.map((edge) => {
-          const from = nodes.get(edge.from);
-          const to = nodes.get(edge.to);
-          if (!from || !to) return null;
-          return <line key={`${edge.from}-${edge.to}`} x1={from.x + 8} y1={from.y} x2={to.x} y2={to.y} />;
-        })}
-      </svg>
-      {graph.nodes.map((node) => (
-        <div className={`context-node context-${node.kind}`} style={{ left: `${node.x}%`, top: `${node.y}%` }} key={node.id}>
-          <span>{node.kind}</span>
-          <strong>{node.label}</strong>
+    <div className="context-shell">
+      <div className="context-layer">
+        <svg className="context-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {graph.edges.map((edge) => {
+            const from = nodes.get(edge.from);
+            const to = nodes.get(edge.to);
+            if (!from || !to) return null;
+            return <line key={`${edge.from}-${edge.to}`} x1={from.x + 8} y1={from.y} x2={to.x} y2={to.y} />;
+          })}
+        </svg>
+        {graph.nodes.map((node) => (
+          <div className={`context-node context-${node.kind}`} style={{ left: `${node.x}%`, top: `${node.y}%` }} key={node.id}>
+            <span>{node.kind}</span>
+            <strong>{node.label}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="context-details">
+        <div>
+          <span>ontology</span>
+          <strong>{graph.ontology?.projectConcept ?? "waiting"}</strong>
+          <small>{(graph.ontology?.concepts ?? []).slice(0, 4).map((item) => item.label).join(" / ") || "waiting"}</small>
         </div>
-      ))}
+        <div>
+          <span>lineage</span>
+          <strong>{graph.lineage?.projectConcept ?? "waiting"}</strong>
+          <small>{(graph.lineage?.steps ?? []).slice(0, 3).map((step) => `${step.from} -> ${step.to}`).join(" / ") || "waiting"}</small>
+        </div>
+        <div>
+          <span>grounding</span>
+          <strong>{graph.evidenceIds?.length ? `${graph.evidenceIds.length} cited packets` : "waiting"}</strong>
+          <small>{graph.groundingPolicy ?? "waiting"}</small>
+        </div>
+      </div>
     </div>
   );
 }

@@ -54,5 +54,11 @@ export interface RecommendationReport {
   }>;
   architecture: string[];
   risks: string[];
+  grounding?: {
+    evidenceIds?: string[];
+    lineageStepIds?: string[];
+    policy?: string;
+    missingEvidenceBehavior?: string;
+  };
   markdown: string;
 }

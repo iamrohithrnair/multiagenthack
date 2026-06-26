@@ -160,6 +160,29 @@ def prometheux_project_id(create: bool = True) -> str:
     return project_id
 
 
+def prometheux_concept_names(project_id: str) -> set[str]:
+    data = prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/list?scope=user", method="GET")
+    return {
+        str(concept.get("name") or concept.get("concept_name") or "")
+        for concept in data.get("data") or []
+    }
+
+
+def prometheux_save_concept(project_id: str, name: str, definition: str, output_predicate: str, description: str, existing: set[str]) -> None:
+    body = {
+        "definition": definition,
+        "concept_type": "logic",
+        "concept_name": name,
+        "output_predicate": output_predicate,
+        "description": description,
+        "scope": "user",
+        "force_overwrite": True,
+    }
+    if name in existing:
+        body["existing_name"] = name
+    prometheux_json(f"/concepts/{urllib.parse.quote(project_id)}/save", body)
+
+
 _CLICKHOUSE_URL: str | None = None
 _CLICKHOUSE_STATUS_EMITTED = False
 
@@ -569,28 +592,147 @@ def huggingface_search(profile: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
-def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]]) -> dict[str, Any]:
+def evidence_packets(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"E{index}",
+            "source": finding.get("adapter"),
+            "provider": finding.get("provider"),
+            "title": finding.get("title"),
+            "url": finding.get("url"),
+            "summary": finding.get("summary"),
+            "retrievedAt": finding.get("retrievedAt"),
+        }
+        for index, finding in enumerate(findings[:24], start=1)
+    ]
+
+
+def vadalog_value(value: Any) -> str:
+    return json.dumps(str(value or ""), ensure_ascii=False)
+
+
+def vadalog_fact(predicate: str, *values: Any) -> str:
+    return f"{predicate}({', '.join(vadalog_value(value) for value in values)})."
+
+
+def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    requirements = [
+        {"id": "context", "label": f"{int(profile.get('contextTokens') or 0):,} token context", "hard": bool(profile.get("contextTokens"))},
+        {"id": "vision", "label": "image input", "hard": bool(profile.get("vision"))},
+        {"id": "voice", "label": "audio input", "hard": bool(profile.get("voice"))},
+        {"id": "tool_calling", "label": "tool calls", "hard": bool(profile.get("toolCalling"))},
+        {"id": "structured_output", "label": "structured output", "hard": bool(profile.get("structuredOutput"))},
+        {"id": "streaming", "label": "streaming", "hard": bool(profile.get("streaming"))},
+    ]
+    top_models = ranked_models[:8]
+    concepts = [
+        {"id": "workload", "label": profile.get("product") or profile.get("goalPrompt") or "workload", "kind": "first_party_input", "evidenceIds": ["U1"]},
+        {"id": "prompt_profile", "label": f"{len(prompts)} profiled prompts", "kind": "first_party_input", "evidenceIds": ["U1"]},
+        {"id": "evidence_packet", "label": f"{len(evidence)} retrieved evidence packets", "kind": "source"},
+        {"id": "candidate_model", "label": f"{len(top_models)} ranked candidate models", "kind": "model"},
+        {"id": "recommendation", "label": "grounded model recommendation", "kind": "output"},
+    ]
+    relations = [
+        {"from": "workload", "to": requirement["id"], "type": "requires", "evidenceIds": ["U1"]}
+        for requirement in requirements
+        if requirement["hard"]
+    ]
+    relations.extend(
+        {"from": str(model.get("id")), "to": "candidate_model", "type": "ranked_by_models_dev", "evidenceIds": ["E1"]}
+        for model in top_models
+    )
+    lines = [
+        "% Find My Model ontology. Saved into Prometheux for the project lineage view.",
+        vadalog_fact("find_my_model_workload", "workload", profile.get("product") or "", profile.get("goalPrompt") or ""),
+    ]
+    lines.extend(vadalog_fact("find_my_model_requirement", item["id"], item["label"], "hard" if item["hard"] else "soft") for item in requirements)
+    lines.extend(vadalog_fact("find_my_model_ontology", "requirement", item["id"], item["label"]) for item in requirements)
+    lines.extend(vadalog_fact("find_my_model_evidence", item["id"], item.get("source") or "", item.get("url") or "") for item in evidence[:12])
+    for model in top_models:
+        model_id = str(model.get("id") or "")
+        lines.append(vadalog_fact("find_my_model_candidate", model_id, model.get("name") or "", model.get("provider") or "", model.get("context") or 0))
+        lines.append(vadalog_fact("find_my_model_ontology", "candidate_model", model_id, model.get("name") or ""))
+        for modality in model.get("inputModalities") or []:
+            lines.append(vadalog_fact("find_my_model_supports", model_id, modality))
+        lines.append(vadalog_fact("find_my_model_grounded_by", model_id, "E1"))
+    lines.append('@output("find_my_model_ontology").')
+    return {
+        "projectConcept": "find_my_model_ontology",
+        "outputPredicate": "find_my_model_ontology",
+        "concepts": concepts,
+        "requirements": requirements,
+        "relations": relations,
+        "evidenceIds": [item["id"] for item in evidence],
+        "definition": "\n".join(lines),
+    }
+
+
+def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    web_ids = [item["id"] for item in evidence if item.get("source") in {"prometheux", "tavily", "huggingface"}]
+    steps = [
+        {"id": "L1", "from": "user_input", "to": "prompt_profile", "label": "Profile workload from product, prompt, and filters", "evidenceIds": ["U1"]},
+        {"id": "L2", "from": "models.dev", "to": "ranked_models", "label": "Rank provider catalog against hard filters", "evidenceIds": ["E1"]},
+        {"id": "L3", "from": "web_research", "to": "evidence_packets", "label": "Collect provider and product evidence", "evidenceIds": web_ids[:8]},
+        {"id": "L4", "from": "evidence_packets", "to": "ontology", "label": "Bind requirements, candidates, and source evidence", "evidenceIds": ["E1", *web_ids[:4]]},
+        {"id": "L5", "from": "ontology", "to": "recommendation", "label": "ADK may only reason from cited packets; missing facts stay unknown", "evidenceIds": ["E1", *web_ids[:4]]},
+    ]
+    lines = ["% Find My Model lineage. Prometheux can materialize this as a chase graph when run."]
+    for step in steps:
+        lines.append(vadalog_fact("find_my_model_lineage", step["id"], step["from"], step["to"], step["label"]))
+        for evidence_id in step["evidenceIds"]:
+            lines.append(vadalog_fact("find_my_model_lineage_evidence", step["id"], evidence_id))
+    lines.extend([
+        '@chase("csv", "disk/find_my_model", "lineage.csv").',
+        '@output("find_my_model_lineage").',
+    ])
+    return {
+        "projectConcept": "find_my_model_lineage",
+        "outputPredicate": "find_my_model_lineage",
+        "steps": steps,
+        "definition": "\n".join(lines),
+        "policy": "Evidence IDs are mandatory; unsupported price, latency, and availability claims must be returned as unknown or needs_verification.",
+    }
+
+
+def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: dict[str, Any]) -> None:
+    existing = prometheux_concept_names(project_id)
+    prometheux_save_concept(project_id, ontology["projectConcept"], ontology["definition"], ontology["outputPredicate"], "Find My Model ontology: workload, requirements, candidates, and evidence bindings.", existing)
+    prometheux_save_concept(project_id, lineage["projectConcept"], lineage["definition"], lineage["outputPredicate"], "Find My Model lineage: source evidence to ontology to recommendation.", existing)
+    emit("adapter_status", {"adapter": "prometheux", "status": "saved_ontology_and_lineage_concepts", "projectId": project_id})
+
+
+def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]], ontology: dict[str, Any], lineage: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
     nodes = [
-        {"id": "site", "label": profile.get("productUrl") or profile.get("product") or "Product", "kind": "input", "x": 14, "y": 34},
-        {"id": "prompt", "label": profile.get("goalPrompt") or f"{len(prompts)} representative prompts", "kind": "input", "x": 14, "y": 66},
-        {"id": "prometheux", "label": "Prometheux context agent", "kind": "agent", "x": 38, "y": 18},
-        {"id": "tavily", "label": "Tavily + web evidence", "kind": "source", "x": 38, "y": 50},
-        {"id": "models", "label": f"models.dev catalog: {len(ranked_models)} models", "kind": "source", "x": 38, "y": 82},
-        {"id": "frontier", "label": "Frontier-first shortlist", "kind": "rank", "x": 63, "y": 34},
-        {"id": "filters", "label": f"{int(profile.get('contextTokens') or 0):,} ctx | voice {bool(profile.get('voice'))} | realtime {bool(profile.get('realTime'))}", "kind": "rank", "x": 63, "y": 66},
-        {"id": "recommendation", "label": "Gemini ADK recommendation", "kind": "output", "x": 86, "y": 50},
+        {"id": "site", "label": profile.get("productUrl") or profile.get("product") or "Product", "kind": "input", "x": 10, "y": 30},
+        {"id": "prompt", "label": profile.get("goalPrompt") or f"{len(prompts)} representative prompts", "kind": "input", "x": 10, "y": 70},
+        {"id": "prometheux", "label": "Prometheux context agent", "kind": "agent", "x": 32, "y": 18},
+        {"id": "tavily", "label": "Tavily + web evidence", "kind": "source", "x": 32, "y": 50},
+        {"id": "models", "label": f"models.dev catalog: {len(ranked_models)} models", "kind": "source", "x": 32, "y": 82},
+        {"id": "ontology", "label": "Project ontology concept", "kind": "ontology", "x": 56, "y": 34},
+        {"id": "lineage", "label": "Project lineage chase graph", "kind": "lineage", "x": 56, "y": 66},
+        {"id": "filters", "label": f"{int(profile.get('contextTokens') or 0):,} ctx | voice {bool(profile.get('voice'))} | realtime {bool(profile.get('realTime'))}", "kind": "rank", "x": 76, "y": 34},
+        {"id": "recommendation", "label": "Evidence-cited ADK recommendation", "kind": "output", "x": 88, "y": 66},
     ]
     edges = [
         {"from": "site", "to": "prometheux"},
         {"from": "prompt", "to": "prometheux"},
-        {"from": "prometheux", "to": "frontier"},
-        {"from": "tavily", "to": "frontier"},
-        {"from": "models", "to": "frontier"},
-        {"from": "models", "to": "filters"},
+        {"from": "prometheux", "to": "ontology"},
+        {"from": "tavily", "to": "ontology"},
+        {"from": "models", "to": "ontology"},
+        {"from": "ontology", "to": "lineage"},
+        {"from": "lineage", "to": "filters"},
         {"from": "filters", "to": "recommendation"},
-        {"from": "frontier", "to": "recommendation"},
+        {"from": "lineage", "to": "recommendation"},
     ]
-    graph = {"nodes": nodes, "edges": edges, "evidenceCount": len(findings)}
+    graph = {
+        "nodes": nodes,
+        "edges": edges,
+        "evidenceCount": len(findings),
+        "ontology": {key: ontology[key] for key in ["projectConcept", "concepts", "requirements", "relations", "evidenceIds"]},
+        "lineage": {key: lineage[key] for key in ["projectConcept", "steps", "policy"]},
+        "groundingPolicy": "Recommendation claims must cite evidence IDs; missing facts stay unknown or need verification.",
+        "evidenceIds": [item["id"] for item in evidence],
+    }
     emit("context_layer", graph)
     return graph
 
@@ -696,19 +838,18 @@ def prometheux_research(profile: dict[str, Any], ranked_models: list[dict[str, A
     return [finding]
 
 
-async def adk_recommend(request: dict[str, Any], prompts: list[dict[str, Any]], findings: list[dict[str, Any]], ranked_models: list[dict[str, Any]]) -> dict[str, Any]:
+async def adk_recommend(request: dict[str, Any], prompts: list[dict[str, Any]], evidence: list[dict[str, Any]], ranked_models: list[dict[str, Any]], ontology: dict[str, Any], lineage: dict[str, Any]) -> dict[str, Any]:
     key = env("GEMINI_API_KEY", "GOOLE_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY")
     if not key:
         raise RuntimeError("Gemini key missing: set GOOLE_API_KEY or GOOGLE_API_KEY")
     os.environ["GOOGLE_API_KEY"] = key
     model = env("GEMINI_MODEL") or "gemini-2.5-flash"
-    evidence = [
-        {"source": f.get("adapter"), "provider": f.get("provider"), "title": f.get("title"), "url": f.get("url"), "summary": f.get("summary")}
-        for f in findings[:24]
-    ]
     prompt = f"""
 You are an AI infrastructure architect. Recommend a real deployment strategy for this workload.
-Use only the evidence packets below. If pricing evidence is weak, say so and lower confidence.
+Use only the first-party workload input and the evidence packets below. Every factual claim about
+model capability, price, latency, availability, provider support, or architecture must be supported
+by evidenceIds from the packets. If the evidence does not contain a fact, write "unknown" or
+"needs_verification"; do not infer it from memory.
 Start with the best frontier models from models.dev, especially Claude Opus 4.8, Claude Fable 5,
 GPT-5.5 / GPT-5.5 Pro, and Gemini 3.1 Pro when they match the filters. Do not restrict yourself
 to open-source or open-weight models; include open-weight/Hugging Face options only when they are
@@ -716,7 +857,8 @@ a better fit for cost, privacy, deployment, or latency.
 Voice and vision are hard requirements when true; voice requires audio input support and vision
 requires image input support. If frontierFirst is true, pick the highest-ranked candidate that
 satisfies the hard filters unless the evidence says it is unavailable.
-Return only valid JSON with keys: primary, alternatives, routing, architecture, risks, markdown.
+Return only valid JSON with keys: primary, alternatives, routing, architecture, risks, markdown, grounding.
+grounding must include evidenceIds and lineageStepIds used for the recommendation.
 
 Workload:
 {json.dumps(request.get("profile", {}), indent=2)}
@@ -726,6 +868,12 @@ Prompt profile:
 
 Evidence:
 {json.dumps(evidence, indent=2)}
+
+Ontology:
+{json.dumps({key: ontology[key] for key in ["concepts", "requirements", "relations", "evidenceIds"]}, indent=2)}
+
+Lineage:
+{json.dumps({key: lineage[key] for key in ["steps", "policy"]}, indent=2)}
 
 Ranked models.dev candidates:
 {json.dumps(ranked_models[:60], indent=2)}
@@ -755,6 +903,26 @@ Ranked models.dev candidates:
     if not match:
         raise RuntimeError(f"ADK returned no JSON: {text[:500]}")
     return json.loads(match.group(0))
+
+
+def enforce_grounding(recommendation: dict[str, Any], evidence: list[dict[str, Any]], lineage: dict[str, Any]) -> dict[str, Any]:
+    known_evidence = {item["id"] for item in evidence}
+    known_lineage = {step["id"] for step in lineage.get("steps") or []}
+    grounding = recommendation.get("grounding") if isinstance(recommendation.get("grounding"), dict) else {}
+    evidence_ids = [str(item) for item in grounding.get("evidenceIds") or [] if str(item) in known_evidence]
+    lineage_ids = [str(item) for item in grounding.get("lineageStepIds") or [] if str(item) in known_lineage]
+    if "E1" in known_evidence and "E1" not in evidence_ids:
+        evidence_ids.insert(0, "E1")
+    if not evidence_ids:
+        raise RuntimeError("recommendation_missing_grounding_evidence_ids")
+    recommendation["grounding"] = {
+        **grounding,
+        "evidenceIds": evidence_ids,
+        "lineageStepIds": lineage_ids or sorted(known_lineage),
+        "policy": lineage.get("policy"),
+        "missingEvidenceBehavior": "unknown_or_needs_verification",
+    }
+    return recommendation
 
 
 def model_matches_hard_filters(model: dict[str, Any], profile: dict[str, Any]) -> bool:
@@ -837,13 +1005,25 @@ async def run(request: dict[str, Any]) -> None:
         *tavily_search(profile),
         *prometheux_research(profile, ranked_models),
     ]
-    context_graph = context_layer(profile, prompts, ranked_models, findings)
+    evidence = evidence_packets(findings)
+    ontology = build_ontology(profile, prompts, ranked_models, evidence)
+    lineage = build_lineage(profile, evidence)
+    project_id = prometheux_project_id(create=True)
+    prometheux_save_context(project_id, ontology, lineage)
+    ontology["projectId"] = project_id
+    lineage["projectId"] = project_id
+    emit("ontology", ontology)
+    emit("lineage", lineage)
+    context_graph = context_layer(profile, prompts, ranked_models, findings, ontology, lineage, evidence)
     record("research", {"findings": findings})
+    record("ontology", ontology)
+    record("lineage", lineage)
     record("context_layer", context_graph)
 
     emit("phase", "reasoning")
-    recommendation = await adk_recommend(request, prompts, findings, ranked_models)
+    recommendation = await adk_recommend(request, prompts, evidence, ranked_models, ontology, lineage)
     recommendation = enforce_hard_filters(recommendation, profile, ranked_models)
+    recommendation = enforce_grounding(recommendation, evidence, lineage)
     emit("recommendation", recommendation)
     record("recommendation", recommendation)
     emit("complete", {"runId": run_id})
@@ -860,6 +1040,13 @@ def selfcheck() -> None:
         {"provider": "anthropic", "name": "Claude Opus 4.8", "id": "anthropic/claude-opus-4-8", "context": 1000000, "inputModalities": ["text", "image"]},
     ]
     assert enforce_hard_filters(recommendation, {"voice": True, "vision": True, "contextTokens": 200000}, ranked)["primary"]["provider"] == "google"
+    evidence = evidence_packets([{"adapter": "models.dev", "title": "catalog", "url": "https://models.dev/"}])
+    ontology = build_ontology({"product": "Support bot", "contextTokens": 200000, "vision": True}, profiled, ranked, evidence)
+    lineage = build_lineage({}, evidence)
+    assert "find_my_model_candidate" in ontology["definition"]
+    assert '@chase("csv", "disk/find_my_model", "lineage.csv").' in lineage["definition"]
+    grounded = enforce_grounding({"grounding": {"evidenceIds": ["E1"], "lineageStepIds": ["L2"]}}, evidence, lineage)
+    assert grounded["grounding"]["missingEvidenceBehavior"] == "unknown_or_needs_verification"
     print("ok")
 
 

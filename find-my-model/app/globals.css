@@ -480,6 +480,13 @@ textarea {
   animation: sweep 1.35s ease-in-out infinite;
 }
 
+.context-shell {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(170px, 1fr) auto;
+  overflow: hidden;
+}
+
 .context-layer {
   min-height: 0;
   position: relative;
@@ -535,8 +542,55 @@ textarea {
   border-color: rgba(245, 158, 11, 0.52);
 }
 
+.context-ontology {
+  border-color: rgba(124, 58, 237, 0.45);
+}
+
+.context-lineage {
+  border-color: rgba(14, 165, 233, 0.45);
+}
+
 .context-output {
   border-color: rgba(5, 150, 105, 0.45);
+}
+
+.context-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.context-details div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line);
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.context-details div:last-child {
+  border-right: 0;
+}
+
+.context-details span {
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.context-details strong,
+.context-details small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-details small {
+  color: var(--muted);
 }
 
 .report {
@@ -816,8 +870,18 @@ textarea {
   .quick-stats,
   .grid-2,
   .checks,
-  .trace-tabs {
+  .trace-tabs,
+  .context-details {
     grid-template-columns: 1fr;
+  }
+
+  .context-details div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .context-details div:last-child {
+    border-bottom: 0;
   }
 
   .panel-title {
