@@ -19,6 +19,13 @@ export interface WorkloadProfile {
   fastModel: boolean;
   realTime: boolean;
   frontierFirst: boolean;
+  rag: boolean;
+  vectorDatabase: "none" | "pinecone" | "weaviate" | "qdrant" | "pgvector" | "milvus" | "chroma" | "other";
+  vectorConnection: string;
+  documentUpload: boolean;
+  imageUpload: boolean;
+  uploadedContextFiles: string[];
+  uploadedContextText: string;
   priority: "best" | "balanced" | "fast" | "cheap";
   notes: string;
 }

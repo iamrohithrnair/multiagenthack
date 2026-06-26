@@ -616,6 +616,8 @@ def vadalog_fact(predicate: str, *values: Any) -> str:
 
 
 def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    uploaded_files = [str(item) for item in profile.get("uploadedContextFiles") or [] if str(item).strip()]
+    vector_db = str(profile.get("vectorDatabase") or "none")
     requirements = [
         {"id": "context", "label": f"{int(profile.get('contextTokens') or 0):,} token context", "hard": bool(profile.get("contextTokens"))},
         {"id": "vision", "label": "image input", "hard": bool(profile.get("vision"))},
@@ -623,11 +625,14 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
         {"id": "tool_calling", "label": "tool calls", "hard": bool(profile.get("toolCalling"))},
         {"id": "structured_output", "label": "structured output", "hard": bool(profile.get("structuredOutput"))},
         {"id": "streaming", "label": "streaming", "hard": bool(profile.get("streaming"))},
+        {"id": "rag", "label": f"RAG over {vector_db} vector store", "hard": bool(profile.get("rag"))},
+        {"id": "document_uploads", "label": f"{len(uploaded_files)} uploaded context files", "hard": bool(profile.get("documentUpload") or profile.get("imageUpload"))},
     ]
     top_models = ranked_models[:8]
     concepts = [
         {"id": "workload", "label": profile.get("product") or profile.get("goalPrompt") or "workload", "kind": "first_party_input", "evidenceIds": ["U1"]},
         {"id": "prompt_profile", "label": f"{len(prompts)} profiled prompts", "kind": "first_party_input", "evidenceIds": ["U1"]},
+        {"id": "rag_agent", "label": f"RAG agent via {vector_db}", "kind": "retrieval", "evidenceIds": ["U1"]},
         {"id": "evidence_packet", "label": f"{len(evidence)} retrieved evidence packets", "kind": "source"},
         {"id": "candidate_model", "label": f"{len(top_models)} ranked candidate models", "kind": "model"},
         {"id": "recommendation", "label": "grounded model recommendation", "kind": "output"},
@@ -648,6 +653,9 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
     lines.extend(vadalog_fact("find_my_model_requirement", item["id"], item["label"], "hard" if item["hard"] else "soft") for item in requirements)
     lines.extend(vadalog_fact("find_my_model_ontology", "requirement", item["id"], item["label"]) for item in requirements)
     lines.extend(vadalog_fact("find_my_model_evidence", item["id"], item.get("source") or "", item.get("url") or "") for item in evidence[:12])
+    if profile.get("rag"):
+        lines.append(vadalog_fact("find_my_model_rag_source", vector_db, profile.get("vectorConnection") or "", ",".join(uploaded_files[:12])))
+        lines.append(vadalog_fact("find_my_model_ontology", "rag_agent", vector_db, profile.get("vectorConnection") or ""))
     for model in top_models:
         model_id = str(model.get("id") or "")
         lines.append(vadalog_fact("find_my_model_candidate", model_id, model.get("name") or "", model.get("provider") or "", model.get("context") or 0))
@@ -669,12 +677,14 @@ def build_ontology(profile: dict[str, Any], prompts: list[dict[str, Any]], ranke
 
 def build_lineage(profile: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
     web_ids = [item["id"] for item in evidence if item.get("source") in {"prometheux", "tavily", "huggingface"}]
+    rag_label = f"Index uploaded docs/images and retrieve from {profile.get('vectorDatabase') or 'selected vector store'}"
     steps = [
         {"id": "L1", "from": "user_input", "to": "prompt_profile", "label": "Profile workload from product, prompt, and filters", "evidenceIds": ["U1"]},
-        {"id": "L2", "from": "models.dev", "to": "ranked_models", "label": "Rank provider catalog against hard filters", "evidenceIds": ["E1"]},
-        {"id": "L3", "from": "web_research", "to": "evidence_packets", "label": "Collect provider and product evidence", "evidenceIds": web_ids[:8]},
-        {"id": "L4", "from": "evidence_packets", "to": "ontology", "label": "Bind requirements, candidates, and source evidence", "evidenceIds": ["E1", *web_ids[:4]]},
-        {"id": "L5", "from": "ontology", "to": "recommendation", "label": "ADK may only reason from cited packets; missing facts stay unknown", "evidenceIds": ["E1", *web_ids[:4]]},
+        {"id": "L2", "from": "prompt_profile", "to": "rag_context", "label": rag_label if profile.get("rag") else "No RAG context configured", "evidenceIds": ["U1"]},
+        {"id": "L3", "from": "models.dev", "to": "ranked_models", "label": "Rank provider catalog against hard filters", "evidenceIds": ["E1"]},
+        {"id": "L4", "from": "web_research", "to": "evidence_packets", "label": "Collect provider and product evidence", "evidenceIds": web_ids[:8]},
+        {"id": "L5", "from": "rag_context", "to": "ontology", "label": "Bind retrieval sources, requirements, candidates, and evidence", "evidenceIds": ["U1", "E1", *web_ids[:4]]},
+        {"id": "L6", "from": "ontology", "to": "recommendation", "label": "ADK may only reason from cited packets; missing facts stay unknown", "evidenceIds": ["E1", *web_ids[:4]]},
     ]
     lines = ["% Find My Model lineage. Prometheux can materialize this as a chase graph when run."]
     for step in steps:
@@ -701,39 +711,51 @@ def prometheux_save_context(project_id: str, ontology: dict[str, Any], lineage: 
     emit("adapter_status", {"adapter": "prometheux", "status": "saved_ontology_and_lineage_concepts", "projectId": project_id})
 
 
-def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]], ontology: dict[str, Any], lineage: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def context_layer(profile: dict[str, Any], prompts: list[dict[str, Any]], ranked_models: list[dict[str, Any]], findings: list[dict[str, Any]], ontology: dict[str, Any], lineage: dict[str, Any], evidence: list[dict[str, Any]], *, emit_event: bool = True) -> dict[str, Any]:
+    vector_db = str(profile.get("vectorDatabase") or "none")
+    uploaded_files = [str(item) for item in profile.get("uploadedContextFiles") or [] if str(item).strip()]
     nodes = [
-        {"id": "site", "label": profile.get("productUrl") or profile.get("product") or "Product", "kind": "input", "x": 10, "y": 30},
-        {"id": "prompt", "label": profile.get("goalPrompt") or f"{len(prompts)} representative prompts", "kind": "input", "x": 10, "y": 70},
-        {"id": "prometheux", "label": "Prometheux context agent", "kind": "agent", "x": 32, "y": 18},
-        {"id": "tavily", "label": "Tavily + web evidence", "kind": "source", "x": 32, "y": 50},
-        {"id": "models", "label": f"models.dev catalog: {len(ranked_models)} models", "kind": "source", "x": 32, "y": 82},
-        {"id": "ontology", "label": "Project ontology concept", "kind": "ontology", "x": 56, "y": 34},
-        {"id": "lineage", "label": "Project lineage chase graph", "kind": "lineage", "x": 56, "y": 66},
-        {"id": "filters", "label": f"{int(profile.get('contextTokens') or 0):,} ctx | voice {bool(profile.get('voice'))} | realtime {bool(profile.get('realTime'))}", "kind": "rank", "x": 76, "y": 34},
-        {"id": "recommendation", "label": "Evidence-cited ADK recommendation", "kind": "output", "x": 88, "y": 66},
+        {"id": "input", "label": profile.get("productUrl") or profile.get("product") or "Product + prompts", "kind": "input", "x": 6, "y": 50},
+        {"id": "ingest", "label": f"{len(prompts)} prompts | {len(uploaded_files)} files", "kind": "ingest", "x": 18, "y": 50},
+        {"id": "rag", "label": f"RAG agent: {vector_db}", "kind": "rag", "x": 30, "y": 50},
+        {"id": "prometheux", "label": "Prometheux research", "kind": "agent", "x": 42, "y": 50},
+        {"id": "evidence", "label": f"{len(findings)} evidence packets", "kind": "source", "x": 54, "y": 50},
+        {"id": "ontology", "label": "Project ontology", "kind": "ontology", "x": 66, "y": 50},
+        {"id": "lineage", "label": "Lineage chase graph", "kind": "lineage", "x": 78, "y": 50},
+        {"id": "recommendation", "label": "Evidence-cited recommendation", "kind": "output", "x": 90, "y": 50},
     ]
     edges = [
-        {"from": "site", "to": "prometheux"},
-        {"from": "prompt", "to": "prometheux"},
-        {"from": "prometheux", "to": "ontology"},
-        {"from": "tavily", "to": "ontology"},
-        {"from": "models", "to": "ontology"},
+        {"from": "input", "to": "ingest"},
+        {"from": "ingest", "to": "rag"},
+        {"from": "rag", "to": "prometheux"},
+        {"from": "prometheux", "to": "evidence"},
+        {"from": "evidence", "to": "ontology"},
         {"from": "ontology", "to": "lineage"},
-        {"from": "lineage", "to": "filters"},
-        {"from": "filters", "to": "recommendation"},
         {"from": "lineage", "to": "recommendation"},
+    ]
+    pipeline = [
+        {"id": "input", "label": "Inputs", "detail": "website, prompt, filters"},
+        {"id": "ingest", "label": "Ingest", "detail": f"{len(uploaded_files)} uploaded files"},
+        {"id": "rag", "label": "RAG", "detail": vector_db if profile.get("rag") else "off"},
+        {"id": "prometheux", "label": "Research", "detail": "Prometheux + web"},
+        {"id": "evidence", "label": "Evidence", "detail": f"{len(evidence)} cited packets"},
+        {"id": "ontology", "label": "Ontology", "detail": ontology["projectConcept"]},
+        {"id": "lineage", "label": "Lineage", "detail": lineage["projectConcept"]},
+        {"id": "recommendation", "label": "Recommend", "detail": "grounded ADK"},
     ]
     graph = {
         "nodes": nodes,
         "edges": edges,
+        "pipeline": pipeline,
         "evidenceCount": len(findings),
         "ontology": {key: ontology[key] for key in ["projectConcept", "concepts", "requirements", "relations", "evidenceIds"]},
         "lineage": {key: lineage[key] for key in ["projectConcept", "steps", "policy"]},
+        "rag": {"enabled": bool(profile.get("rag")), "vectorDatabase": vector_db, "files": uploaded_files[:12]},
         "groundingPolicy": "Recommendation claims must cite evidence IDs; missing facts stay unknown or need verification.",
         "evidenceIds": [item["id"] for item in evidence],
     }
-    emit("context_layer", graph)
+    if emit_event:
+        emit("context_layer", graph)
     return graph
 
 
@@ -749,6 +771,8 @@ def tavily_search(profile: dict[str, Any]) -> list[dict[str, Any]]:
         "Claude Opus 4.8 Claude Fable 5 GPT-5.5 Gemini 3.1 Pro model pricing context voice vision",
         f"{profile.get('product', 'AI workload')} {website} {goal} LLM workload benchmark cost latency routing architecture",
     ]
+    if profile.get("rag"):
+        queries.append(f"{profile.get('vectorDatabase', 'vector database')} RAG agent document image upload retrieval model architecture")
     if website:
         queries.append(f"{website} product features AI assistant voice vision workflow users")
     findings: list[dict[str, Any]] = []
@@ -789,6 +813,7 @@ def prometheux_research(profile: dict[str, Any], ranked_models: list[dict[str, A
         f"Product website: {website or 'not provided'}\n"
         f"Use-case prompt: {goal or 'not provided'}\n"
         f"Advanced filters: {json.dumps(profile, ensure_ascii=False)}\n"
+        f"RAG context: vector database={profile.get('vectorDatabase')}, connection={profile.get('vectorConnection')}, uploaded files={profile.get('uploadedContextFiles')}\n"
         f"Provider pages: {json.dumps(PROVIDER_PAGES, ensure_ascii=False)}\n"
         f"Ranked models.dev candidates: {json.dumps(ranked_models[:12], ensure_ascii=False)}"
     )
@@ -862,6 +887,9 @@ grounding must include evidenceIds and lineageStepIds used for the recommendatio
 
 Workload:
 {json.dumps(request.get("profile", {}), indent=2)}
+
+RAG/vector context:
+{json.dumps({key: request.get("profile", {}).get(key) for key in ["rag", "vectorDatabase", "vectorConnection", "documentUpload", "imageUpload", "uploadedContextFiles"]}, indent=2)}
 
 Prompt profile:
 {json.dumps([{**{k: p[k] for k in ["id", "category", "tokensEstimate"]}, "sample": p["text"][:240]} for p in prompts], indent=2)}
@@ -985,6 +1013,8 @@ async def run(request: dict[str, Any]) -> None:
     prompt_inputs = [str(item) for item in (request.get("prompts") or []) if str(item).strip()]
     if profile.get("goalPrompt"):
         prompt_inputs.insert(0, str(profile.get("goalPrompt")))
+    if profile.get("uploadedContextText"):
+        prompt_inputs.append(clip(str(profile.get("uploadedContextText")), 4000))
     if not prompt_inputs and profile.get("productUrl"):
         prompt_inputs.append(f"Infer the product workload from {profile.get('productUrl')} and recommend the best model stack.")
     prompts = profile_prompts(prompt_inputs)
@@ -1041,10 +1071,36 @@ def selfcheck() -> None:
     ]
     assert enforce_hard_filters(recommendation, {"voice": True, "vision": True, "contextTokens": 200000}, ranked)["primary"]["provider"] == "google"
     evidence = evidence_packets([{"adapter": "models.dev", "title": "catalog", "url": "https://models.dev/"}])
-    ontology = build_ontology({"product": "Support bot", "contextTokens": 200000, "vision": True}, profiled, ranked, evidence)
-    lineage = build_lineage({}, evidence)
+    rag_profile = {
+        "product": "Support bot",
+        "contextTokens": 200000,
+        "vision": True,
+        "rag": True,
+        "vectorDatabase": "pgvector",
+        "vectorConnection": "postgres://example.invalid/docs",
+        "documentUpload": True,
+        "imageUpload": True,
+        "uploadedContextFiles": ["handbook.md", "screenshot.png"],
+    }
+    ontology = build_ontology(rag_profile, profiled, ranked, evidence)
+    lineage = build_lineage(rag_profile, evidence)
     assert "find_my_model_candidate" in ontology["definition"]
+    assert "find_my_model_rag_source" in ontology["definition"]
+    assert any(item["id"] == "rag" and item["hard"] for item in ontology["requirements"])
     assert '@chase("csv", "disk/find_my_model", "lineage.csv").' in lineage["definition"]
+    assert any(step["to"] == "rag_context" for step in lineage["steps"])
+    context = context_layer(rag_profile, profiled, ranked, [], ontology, lineage, evidence, emit_event=False)
+    assert [step["label"] for step in context["pipeline"]] == ["Inputs", "Ingest", "RAG", "Research", "Evidence", "Ontology", "Lineage", "Recommend"]
+    assert context["edges"] == [
+        {"from": "input", "to": "ingest"},
+        {"from": "ingest", "to": "rag"},
+        {"from": "rag", "to": "prometheux"},
+        {"from": "prometheux", "to": "evidence"},
+        {"from": "evidence", "to": "ontology"},
+        {"from": "ontology", "to": "lineage"},
+        {"from": "lineage", "to": "recommendation"},
+    ]
+    assert context["rag"] == {"enabled": True, "vectorDatabase": "pgvector", "files": ["handbook.md", "screenshot.png"]}
     grounded = enforce_grounding({"grounding": {"evidenceIds": ["E1"], "lineageStepIds": ["L2"]}}, evidence, lineage)
     assert grounded["grounding"]["missingEvidenceBehavior"] == "unknown_or_needs_verification"
     print("ok")

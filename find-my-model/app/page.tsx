@@ -36,31 +36,48 @@ type LineageSummary = {
   steps?: Array<{ id: string; from: string; to: string; label: string; evidenceIds?: string[] }>;
   policy?: string;
 };
+type PipelineStep = { id: string; label: string; detail: string };
 type ContextGraph = {
   nodes: ContextNode[];
   edges: ContextEdge[];
+  pipeline?: PipelineStep[];
   evidenceCount?: number;
   evidenceIds?: string[];
   ontology?: OntologySummary;
   lineage?: LineageSummary;
+  rag?: { enabled?: boolean; vectorDatabase?: string; files?: string[] };
   groundingPolicy?: string;
 };
 
 const defaultContextGraph: ContextGraph = {
   nodes: [
-    { id: "site", label: "Product website", kind: "input", x: 14, y: 50 },
-    { id: "prometheux", label: "Prometheux context agent", kind: "agent", x: 36, y: 32 },
-    { id: "models", label: "models.dev catalog", kind: "source", x: 36, y: 68 },
-    { id: "ontology", label: "Project ontology", kind: "ontology", x: 60, y: 38 },
-    { id: "lineage", label: "Project lineage", kind: "lineage", x: 60, y: 62 },
-    { id: "recommendation", label: "Recommendation", kind: "output", x: 84, y: 50 },
+    { id: "input", label: "Product + prompts", kind: "input", x: 6, y: 50 },
+    { id: "ingest", label: "Context ingest", kind: "ingest", x: 18, y: 50 },
+    { id: "rag", label: "RAG agent", kind: "rag", x: 30, y: 50 },
+    { id: "prometheux", label: "Prometheux research", kind: "agent", x: 42, y: 50 },
+    { id: "evidence", label: "Evidence packets", kind: "source", x: 54, y: 50 },
+    { id: "ontology", label: "Project ontology", kind: "ontology", x: 66, y: 50 },
+    { id: "lineage", label: "Project lineage", kind: "lineage", x: 78, y: 50 },
+    { id: "recommendation", label: "Recommendation", kind: "output", x: 90, y: 50 },
   ],
   edges: [
-    { from: "site", to: "prometheux" },
-    { from: "prometheux", to: "ontology" },
-    { from: "models", to: "ontology" },
+    { from: "input", to: "ingest" },
+    { from: "ingest", to: "rag" },
+    { from: "rag", to: "prometheux" },
+    { from: "prometheux", to: "evidence" },
+    { from: "evidence", to: "ontology" },
     { from: "ontology", to: "lineage" },
     { from: "lineage", to: "recommendation" },
+  ],
+  pipeline: [
+    { id: "input", label: "Inputs", detail: "waiting" },
+    { id: "ingest", label: "Ingest", detail: "waiting" },
+    { id: "rag", label: "RAG", detail: "off" },
+    { id: "prometheux", label: "Research", detail: "waiting" },
+    { id: "evidence", label: "Evidence", detail: "waiting" },
+    { id: "ontology", label: "Ontology", detail: "waiting" },
+    { id: "lineage", label: "Lineage", detail: "waiting" },
+    { id: "recommendation", label: "Recommend", detail: "waiting" },
   ],
 };
 
@@ -136,25 +153,35 @@ function eventText(type: string, data: unknown) {
 
 function ContextLayer({ graph }: { graph: ContextGraph }) {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const pipeline = graph.pipeline?.length ? graph.pipeline : graph.nodes.map((node) => ({ id: node.id, label: node.label, detail: node.kind }));
   return (
     <div className="context-shell">
       <div className="context-layer">
-        <svg className="context-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {graph.edges.map((edge) => {
-            const from = nodes.get(edge.from);
-            const to = nodes.get(edge.to);
-            if (!from || !to) return null;
-            return <line key={`${edge.from}-${edge.to}`} x1={from.x + 8} y1={from.y} x2={to.x} y2={to.y} />;
-          })}
-        </svg>
-        {graph.nodes.map((node) => (
-          <div className={`context-node context-${node.kind}`} style={{ left: `${node.x}%`, top: `${node.y}%` }} key={node.id}>
-            <span>{node.kind}</span>
-            <strong>{node.label}</strong>
-          </div>
-        ))}
+        <div className="context-pipeline">
+          {pipeline.map((step) => (
+            <div className={`context-step context-${nodes.get(step.id)?.kind ?? step.id}`} key={step.id}>
+              <span>{step.label}</span>
+              <strong>{step.detail}</strong>
+            </div>
+          ))}
+        </div>
+        <div className="context-edge-list">
+          {graph.edges.map((edge) => (
+            <span key={`${edge.from}-${edge.to}`}>{edge.from} -&gt; {edge.to}</span>
+          ))}
+        </div>
       </div>
       <div className="context-details">
+        <div>
+          <span>pipeline</span>
+          <strong>{(graph.pipeline ?? []).map((step) => step.label).join(" -> ") || "waiting"}</strong>
+          <small>{(graph.pipeline ?? []).map((step) => step.detail).join(" / ") || "waiting"}</small>
+        </div>
+        <div>
+          <span>rag</span>
+          <strong>{graph.rag?.enabled ? graph.rag.vectorDatabase : "off"}</strong>
+          <small>{graph.rag?.files?.length ? graph.rag.files.join(" / ") : "no files"}</small>
+        </div>
         <div>
           <span>ontology</span>
           <strong>{graph.ontology?.projectConcept ?? "waiting"}</strong>
@@ -197,6 +224,13 @@ export default function Home() {
     fastModel: false,
     realTime: false,
     frontierFirst: true,
+    rag: true,
+    vectorDatabase: "pgvector",
+    vectorConnection: "",
+    documentUpload: true,
+    imageUpload: true,
+    uploadedContextFiles: [],
+    uploadedContextText: "",
     priority: "best",
     notes: "Prefer low cost for simple tickets, higher quality for escalations.",
   });
@@ -215,6 +249,31 @@ export default function Home() {
   const update = <K extends keyof WorkloadProfile>(key: K, value: WorkloadProfile[K]) => {
     setProfile((current) => ({ ...current, [key]: value }));
   };
+
+  async function addRagFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const names: string[] = [];
+    const textParts: string[] = [];
+    for (const file of Array.from(files).slice(0, 12)) {
+      names.push(file.name);
+      if (file.type.startsWith("image/")) {
+        update("imageUpload", true);
+        continue;
+      }
+      update("documentUpload", true);
+      try {
+        textParts.push(`\n\n# ${file.name}\n${await file.text()}`);
+      } catch {
+        textParts.push(`\n\n# ${file.name}\n[unreadable binary document]`);
+      }
+    }
+    setProfile((current) => ({
+      ...current,
+      rag: true,
+      uploadedContextFiles: Array.from(new Set([...current.uploadedContextFiles, ...names])).slice(0, 24),
+      uploadedContextText: `${current.uploadedContextText}${textParts.join("")}`.slice(0, 16000),
+    }));
+  }
 
   async function run() {
     setRunning(true);
@@ -356,6 +415,29 @@ export default function Home() {
                 <label>Notes<textarea rows={3} cols={1} wrap="soft" value={profile.notes} onChange={(e) => update("notes", e.target.value)} /></label>
               </div>
             </details>
+
+            <div className="rag-box">
+              <div className="rag-head">
+                <label className="check"><input type="checkbox" checked={profile.rag} onChange={(e) => update("rag", e.target.checked)} />RAG agent</label>
+                <label>Vector DB<select value={profile.vectorDatabase} onChange={(e) => update("vectorDatabase", e.target.value as WorkloadProfile["vectorDatabase"])}>
+                  <option value="pgvector">pgvector</option>
+                  <option value="pinecone">Pinecone</option>
+                  <option value="weaviate">Weaviate</option>
+                  <option value="qdrant">Qdrant</option>
+                  <option value="milvus">Milvus</option>
+                  <option value="chroma">Chroma</option>
+                  <option value="other">Other</option>
+                  <option value="none">None</option>
+                </select></label>
+              </div>
+              <label>Vector connection<input placeholder="index, collection, DSN, or notes" value={profile.vectorConnection} onChange={(e) => update("vectorConnection", e.target.value)} /></label>
+              <label className="secondary-button">
+                <Upload size={16} />
+                Upload docs/images
+                <input type="file" multiple accept=".txt,.md,.json,.csv,.pdf,image/*,text/*,application/json" hidden onChange={(e) => addRagFiles(e.target.files)} />
+              </label>
+              {profile.uploadedContextFiles.length > 0 && <div className="file-list">{profile.uploadedContextFiles.map((file) => <span key={file}>{file}</span>)}</div>}
+            </div>
 
             <label>Representative prompts ({prompts.length})<textarea rows={5} cols={1} wrap="soft" value={promptsText} onChange={(e) => setPromptsText(e.target.value)} /></label>
             <label className="secondary-button">
