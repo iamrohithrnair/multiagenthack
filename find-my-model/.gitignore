@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store

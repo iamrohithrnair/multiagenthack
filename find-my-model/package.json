@@ -1,0 +1,25 @@
+{
+  "name": "find-my-model",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "backend:selfcheck": "uv run --project backend --python 3.14.5 python backend/find_my_model.py --selfcheck",
+    "backend:health": "uv run --project backend --python 3.14.5 python backend/find_my_model.py --health"
+  },
+  "dependencies": {
+    "lucide-react": "^0.561.0",
+    "next": "16.2.6",
+    "react": "19.2.1",
+    "react-dom": "19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
+  }
+}
